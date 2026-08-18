@@ -7,7 +7,7 @@ pages_build_output_dir = "public"
 [[d1_databases]]
 binding = "DB"
 database_name = "mydesignlab-db"
-database_id = "REPLACE_WITH_YOUR_DATABASE_ID"
+database_id = "872bbc1f-0f40-4acd-8f91-61b566797b70"
 
 # R2バケット（サムネイル画像・PSDファイルなどの保存先）
 [[r2_buckets]]
