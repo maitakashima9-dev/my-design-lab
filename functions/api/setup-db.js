@@ -1,5 +1,5 @@
 // 初回セットアップ専用（1回使ったらファイルごと削除してください）
-// ブラウザで /api/setup-db?key=mydesignlab-setup-2026&mode=init を開く → 次に mode=seed を開く
+// ブラウザで /api/setup-db?key=mydesignlab-setup-2026&mode=init を開く → 次に mode=seed → 最後に mode=resetpw を開く
 
 const INIT_SQL = `
 CREATE TABLE users (
@@ -201,12 +201,47 @@ function splitStatements(sql) {
     .filter(Boolean);
 }
 
+async function hashPasswordLocal(password, saltHex) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
+  const saltBytes = new Uint8Array(saltHex.length / 2);
+  for (let i = 0; i < saltBytes.length; i++) saltBytes[i] = parseInt(saltHex.substr(i * 2, 2), 16);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: saltBytes, iterations: 100000, hash: 'SHA-256' }, keyMaterial, 256);
+  return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function randomHexLocal(byteLen) {
+  const arr = new Uint8Array(byteLen);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+const DEMO_PASSWORDS = {
+  'mai@example.com': 'mailab-admin-2026',
+  'yamada@example.com': 'student-2026',
+  'sato@example.com': 'student-2026',
+  'suzuki@example.com': 'student-2026',
+  'takahashi@example.com': 'student-2026',
+};
+
 export async function onRequestGet({ request, env }) {
   const url = new URL(request.url);
   if (url.searchParams.get('key') !== 'mydesignlab-setup-2026') {
     return new Response('forbidden', { status: 403 });
   }
   const mode = url.searchParams.get('mode') || 'init';
+
+  if (mode === 'resetpw') {
+    const results = [];
+    for (const [email, pw] of Object.entries(DEMO_PASSWORDS)) {
+      const salt = randomHexLocal(16);
+      const hash = await hashPasswordLocal(pw, salt);
+      const res = await env.DB.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE email = ?')
+        .bind(hash, salt, email).run();
+      results.push({ email, changes: res.meta.changes });
+    }
+    return new Response(JSON.stringify(results, null, 2), { headers: { 'content-type': 'application/json' } });
+  }
+
   const sql = mode === 'seed' ? SEED_SQL : INIT_SQL;
   const statements = splitStatements(sql);
   const results = [];
