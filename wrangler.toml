@@ -1,0 +1,15 @@
+name = "my-design-lab"
+compatibility_date = "2026-01-01"
+pages_build_output_dir = "public"
+
+# D1データベース（記事・チャット・課題などのデータ保存先）
+# 作成後に発行される database_id をここへ貼り付けてください（README参照）
+[[d1_databases]]
+binding = "DB"
+database_name = "mydesignlab-db"
+database_id = "REPLACE_WITH_YOUR_DATABASE_ID"
+
+# R2バケット（サムネイル画像・PSDファイルなどの保存先）
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "mydesignlab-files"
