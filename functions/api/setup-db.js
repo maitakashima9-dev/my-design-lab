@@ -1,5 +1,5 @@
 // 初回セットアップ専用（1回使ったらファイルごと削除してください）
-// ブラウザで /api/setup-db?key=mydesignlab-setup-2026&mode=init を開く → 次に mode=seed → 最後に mode=resetpw を開く
+// ブラウザで /api/setup-db?key=mydesignlab-setup-2026&mode=init を開く → 次に mode=seed を開く
 
 const INIT_SQL = `
 CREATE TABLE users (
@@ -215,6 +215,41 @@ function randomHexLocal(byteLen) {
   return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+const MIGRATE2_SQL = `
+CREATE TABLE gallery_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  thumb_key TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE zukan_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  comment TEXT NOT NULL,
+  thumb_key TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO gallery_items (title, tag, sort_order) VALUES
+('化粧品LP／美容液', '化粧品', 0),
+('サプリメントLP／腸活商材', '健康食品', 1),
+('ペット用品LP／消臭グッズ', 'ペット用品', 2),
+('アパレルLP／機能性インナー', 'アパレル', 3),
+('家電LP／調理家電', '家電', 4),
+('日用品LP／洗剤', '日用品', 5);
+INSERT INTO zukan_items (title, comment, sort_order) VALUES
+('化粧品LP', '配色を2色に絞ることで高級感を演出。CTAだけ差し色の赤にして視線を誘導しています。', 0),
+('サプリメントLP', 'ビフォーアフターの見せ方が秀逸。数字を大きく見せることで説得力を出しています。', 1),
+('ペット用品LP', '口コミ写真を実名で入れることで信頼を獲得。文字量を絞り、写真の情報量で語らせています。', 2),
+('家電LP', '機能訴求と感情訴求のバランスが良い一例。価格の見せ方（分割表示）も丁寧です。', 3);
+`;
+
+const MIGRATE3_SQL = `
+ALTER TABLE files ADD COLUMN access_password TEXT;
+`;
+
 const DEMO_PASSWORDS = {
   'mai@example.com': 'mailab-admin-2026',
   'yamada@example.com': 'student-2026',
@@ -229,6 +264,32 @@ export async function onRequestGet({ request, env }) {
     return new Response('forbidden', { status: 403 });
   }
   const mode = url.searchParams.get('mode') || 'init';
+
+  if (mode === 'migrate2') {
+    const results = [];
+    for (const stmt of splitStatements(MIGRATE2_SQL)) {
+      try {
+        await env.DB.prepare(stmt).run();
+        results.push({ ok: true });
+      } catch (e) {
+        results.push({ ok: false, error: String(e), stmt: stmt.slice(0, 60) });
+      }
+    }
+    return new Response(JSON.stringify(results, null, 2), { headers: { 'content-type': 'application/json' } });
+  }
+
+  if (mode === 'migrate3') {
+    const results = [];
+    for (const stmt of splitStatements(MIGRATE3_SQL)) {
+      try {
+        await env.DB.prepare(stmt).run();
+        results.push({ ok: true });
+      } catch (e) {
+        results.push({ ok: false, error: String(e), stmt: stmt.slice(0, 60) });
+      }
+    }
+    return new Response(JSON.stringify(results, null, 2), { headers: { 'content-type': 'application/json' } });
+  }
 
   if (mode === 'resetpw') {
     const results = [];

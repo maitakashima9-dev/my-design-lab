@@ -63,21 +63,7 @@ const QUESTION_SECTIONS = [
   ]},
 ];
 
-// 試作段階の「ギャラリー部屋」「通販デザイン図鑑」は見た目確認用の固定サンプルです（管理画面からの追加機能は未実装）
-const GALLERY = [
-  {id:1, title:"化粧品LP／美容液", tag:"化粧品"},
-  {id:2, title:"サプリメントLP／腸活商材", tag:"健康食品"},
-  {id:3, title:"ペット用品LP／消臭グッズ", tag:"ペット用品"},
-  {id:4, title:"アパレルLP／機能性インナー", tag:"アパレル"},
-  {id:5, title:"家電LP／調理家電", tag:"家電"},
-  {id:6, title:"日用品LP／洗剤", tag:"日用品"},
-];
-const ZUKAN = [
-  {id:1, title:"化粧品LP", comment:"配色を2色に絞ることで高級感を演出。CTAだけ差し色の赤にして視線を誘導しています。"},
-  {id:2, title:"サプリメントLP", comment:"ビフォーアフターの見せ方が秀逸。数字を大きく見せることで説得力を出しています。"},
-  {id:3, title:"ペット用品LP", comment:"口コミ写真を実名で入れることで信頼を獲得。文字量を絞り、写真の情報量で語らせています。"},
-  {id:4, title:"家電LP", comment:"機能訴求と感情訴求のバランスが良い一例。価格の見せ方（分割表示）も丁寧です。"},
-];
+// 「ギャラリー部屋」「通販デザイン図鑑」は cache.gallery / cache.zukan としてDBから読み込みます
 
 /* =======================================================
    API通信ヘルパー
@@ -101,6 +87,8 @@ const api = {
   },
   get(path) { return this.request('GET', path); },
   post(path, body) { return this.request('POST', path, body === undefined ? {} : body); },
+  put(path, body) { return this.request('PUT', path, body === undefined ? {} : body); },
+  del(path) { return this.request('DELETE', path); },
   postForm(path, form) { return this.request('POST', path, form, true); },
 };
 
@@ -126,7 +114,7 @@ function showToast(message) {
 let currentUser = null; // {id,email,role,name,initial,color,joinedAt}
 const cache = {
   articles: [], videos: [], filesList: [], announcements: [], checklist: [],
-  assignments: [], photoTasks: [], students: [],
+  assignments: [], photoTasks: [], students: [], gallery: [], zukan: [],
   assignmentStatus: {}, photoTaskStatus: {},
   chatMessages: [], reports: [], reportsSummary: null, adminStats: null,
   currentAnswers: {}, currentSubmitted: false,
@@ -274,6 +262,8 @@ async function loadCoreData() {
     api.get('/api/checklist').then(d => cache.checklist = d.checklist),
     api.get('/api/assignments').then(d => cache.assignments = d.assignments),
     api.get('/api/photo-tasks').then(d => cache.photoTasks = d.tasks),
+    api.get('/api/gallery').then(d => cache.gallery = d.items),
+    api.get('/api/zukan').then(d => cache.zukan = d.items),
   ];
   if (currentUser.role === 'admin') {
     tasks.push(api.get('/api/students').then(d => {
@@ -550,7 +540,7 @@ function viewReport() {
     const target = state.adminReportStudent || (cache.students[0] && cache.students[0].id);
     const tst = cache.students.find(s => s.id === target);
     html += '<div class="card"><div class="section-title">'+(tst?tst.name:'')+' さんの日報一覧</div>';
-    html += (cache.reports || []).map(reportItemHTML).join('') || '<div class="page-sub">まだ日報がありません。</div>';
+    html += (cache.reports || []).map(r => reportItemHTML(r, { deletable: true })).join('') || '<div class="page-sub">まだ日報がありません。</div>';
     html += '</div>';
     return html;
   }
@@ -563,12 +553,59 @@ function viewReport() {
     + '</div>';
 
   html += '<div class="card"><div class="section-title">これまでの日報</div>';
-  html += (cache.reports || []).map(reportItemHTML).join('') || '<div class="page-sub">まだ日報がありません。</div>';
+  html += (cache.reports || []).map(r => reportItemHTML(r, { editable: true, deletable: true })).join('') || '<div class="page-sub">まだ日報がありません。</div>';
   html += '</div>';
   return html;
 }
-function reportItemHTML(r) {
-  return '<div class="report-item"><div class="r-date">'+r.date+'</div><div class="r-title">'+escapeHtml(r.title)+'</div><div class="r-content">'+escapeHtml(r.content)+'</div></div>';
+function reportItemHTML(r, opts) {
+  opts = opts || {};
+  let actions = '';
+  if (opts.editable || opts.deletable) {
+    actions = '<div class="admin-card-actions" style="display:flex;gap:6px;margin-top:8px;">'
+      + (opts.editable ? '<button class="btn secondary sm" onclick="openReportEditModal('+r.id+')">'+icon('pen',12)+' 編集</button>' : '')
+      + (opts.deletable ? '<button class="btn secondary sm" onclick="deleteReport('+r.id+')">'+icon('trash',12)+' 削除</button>' : '')
+      + '</div>';
+  }
+  return '<div class="report-item"><div class="r-date">'+r.date+'</div><div class="r-title">'+escapeHtml(r.title)+'</div><div class="r-content">'+escapeHtml(r.content)+'</div>'+actions+'</div>';
+}
+function openReportEditModal(id) {
+  const r = cache.reports.find(x => x.id === id);
+  if (!r) return;
+  showModal('<h2>日報を編集</h2>'
+    + '<div class="form-group"><label>タイトル</label><input type="text" id="editReportTitle" value="'+escapeHtml(r.title)+'"></div>'
+    + '<div class="form-group"><label>内容</label><textarea id="editReportBody">'+escapeHtml(r.content)+'</textarea></div>'
+    + '<button class="btn" id="submitEditReportBtn" onclick="submitReportEdit('+id+')">保存する</button>');
+}
+async function submitReportEdit(id) {
+  const title = document.getElementById('editReportTitle').value.trim();
+  const content = document.getElementById('editReportBody').value.trim();
+  if (!title || !content) { alert('タイトルと内容を入力してください。'); return; }
+  const btn = document.getElementById('submitEditReportBtn');
+  btn.disabled = true; btn.textContent = '保存中...';
+  try {
+    await api.put('/api/reports/' + id, { title, content });
+    closeModal();
+    cache.reports = (await api.get('/api/reports')).reports;
+    render();
+    showToast('日報を更新しました');
+  } catch (e) {
+    alert('更新に失敗しました: ' + e.message);
+    btn.disabled = false; btn.textContent = '保存する';
+  }
+}
+async function deleteReport(id) {
+  if (!confirm('この日報を削除します。よろしいですか？')) return;
+  try {
+    await api.del('/api/reports/' + id);
+    if (currentUser.role === 'admin') {
+      const target = state.adminReportStudent || (cache.students[0] && cache.students[0].id);
+      cache.reports = (await api.get('/api/reports?studentId=' + target)).reports;
+    } else {
+      cache.reports = (await api.get('/api/reports')).reports;
+    }
+    render();
+    showToast('日報を削除しました');
+  } catch (e) { showToast('削除に失敗しました: ' + e.message); }
 }
 async function submitReport() {
   const titleEl = document.getElementById('reportTitle');
@@ -704,10 +741,16 @@ function viewArticles() {
   const list = cache.articles.filter(a => state.category === 'all' || a.cat === state.category);
   html += '<div class="grid cols-2">';
   list.forEach((a, i) => {
+    const adminBtns = currentUser.role === 'admin'
+      ? '<button class="btn secondary sm" onclick="event.stopPropagation();openArticleModal('+a.id+')">'+icon('pen',12)+' 編集</button>'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();deleteArticle('+a.id+')">'+icon('trash',12)+' 削除</button>'
+      : '';
     html += '<div class="article-card" style="--accent:'+rgba(PALETTE[i%3],.4)+';" onclick="openArticle('+a.id+')">'
       + articleThumbHTML(a, i)
       + '<div class="a-body"><span class="tag blue">'+a.cat+'</span>'+(a.read?'<span class="tag" style="margin-left:6px;color:'+PALETTE[2]+';border-color:'+PALETTE[2]+';">'+icon('check',10)+' 既読</span>':'')+'<h4>'+escapeHtml(a.title)+'</h4><p>'+escapeHtml(a.excerpt)+'</p>'
-      + '<div class="article-meta"><button class="bookmark-btn'+(a.bookmarked?' active':'')+'" onclick="event.stopPropagation();toggleBookmark('+a.id+')">'+icon('star',15)+'</button><span class="date">'+a.date+'</span></div></div></div>';
+      + '<div class="article-meta"><button class="bookmark-btn'+(a.bookmarked?' active':'')+'" onclick="event.stopPropagation();toggleBookmark('+a.id+')">'+icon('star',15)+'</button><span class="date">'+a.date+'</span></div>'
+      + (adminBtns ? '<div class="admin-card-actions" style="display:flex;gap:6px;margin-top:8px;">'+adminBtns+'</div>' : '')
+      + '</div></div>';
   });
   html += '</div>';
   if (list.length === 0) html += '<div class="page-sub" style="margin-top:20px;">該当する記事がありません。</div>';
@@ -728,13 +771,15 @@ async function toggleReadArticle(id) {
   try { await api.post('/api/articles/' + id + '/read'); }
   catch (e) { a.read = !a.read; render(); showToast('通信エラー: ' + e.message); }
 }
-function openAddArticleModal() {
+function openAddArticleModal() { openArticleModal(null); }
+function openArticleModal(editId) {
   stagedThumb = null;
   savedArtRange = null;
-  showModal('<h2>記事を追加</h2>'
-    + '<div class="form-group"><label>タイトル</label><input type="text" id="newArtTitle" placeholder="記事タイトル"></div>'
-    + '<div class="form-group"><label>カテゴリ</label><select id="newArtCat">' + CATEGORIES.map(c => '<option value="'+c+'">'+c+'</option>').join('') + '</select></div>'
-    + '<div class="form-group"><label>抜粋（一覧に表示される概要）</label><textarea id="newArtExcerpt" placeholder="記事の概要を1〜2行で"></textarea></div>'
+  const editing = editId ? cache.articles.find(a => a.id === editId) : null;
+  showModal('<h2>' + (editing ? '記事を編集' : '記事を追加') + '</h2>'
+    + '<div class="form-group"><label>タイトル</label><input type="text" id="newArtTitle" placeholder="記事タイトル" value="'+(editing?escapeHtml(editing.title):'')+'"></div>'
+    + '<div class="form-group"><label>カテゴリ</label><select id="newArtCat">' + CATEGORIES.map(c => '<option value="'+c+'"'+(editing&&editing.cat===c?' selected':'')+'>'+c+'</option>').join('') + '</select></div>'
+    + '<div class="form-group"><label>抜粋（一覧に表示される概要）</label><textarea id="newArtExcerpt" placeholder="記事の概要を1〜2行で">'+(editing?escapeHtml(editing.excerpt):'')+'</textarea></div>'
     + '<div class="form-group"><label>本文</label>'
     + '<div class="rich-editor-toolbar"><button type="button" class="btn secondary sm" onmousedown="event.preventDefault();saveArtSelection();" onclick="document.getElementById(\'newArtImgInsertInput\').click()">'+icon('paperclip',13)+' 画像を挿入</button>'
     + '<input type="file" id="newArtImgInsertInput" accept="image/*" multiple style="display:none" onchange="handleArtImgInsertChange(this)">'
@@ -743,9 +788,18 @@ function openAddArticleModal() {
     + ' ondragover="event.preventDefault();this.classList.add(\'drag-over\')"'
     + ' ondragleave="this.classList.remove(\'drag-over\')"'
     + ' ondrop="handleArticleBodyDrop(event)"'
-    + ' onmouseup="saveArtSelection()" onkeyup="saveArtSelection()"></div></div>'
+    + ' onmouseup="saveArtSelection()" onkeyup="saveArtSelection()">'+(editing?editing.body:'')+'</div></div>'
     + thumbUploadFieldHTML('newArtThumbFile', 'artThumbPreview')
-    + '<button class="btn" id="submitArtBtn" onclick="submitNewArticle()">記事を追加する</button>');
+    + '<button class="btn" id="submitArtBtn" onclick="submitArticleForm('+(editId||'null')+')">'+(editing?'保存する':'記事を追加する')+'</button>');
+}
+async function deleteArticle(id) {
+  if (!confirm('この記事を削除します。よろしいですか？')) return;
+  try {
+    await api.del('/api/articles/' + id);
+    cache.articles = (await api.get('/api/articles')).articles;
+    render();
+    showToast('記事を削除しました');
+  } catch (e) { showToast('削除に失敗しました: ' + e.message); }
 }
 function saveArtSelection() {
   const editor = document.getElementById('newArtBody');
@@ -803,7 +857,7 @@ function handleArticleBodyDrop(e) {
   if (range && editor.contains(range.startContainer)) savedArtRange = range;
   files.forEach(insertArtImage);
 }
-async function submitNewArticle() {
+async function submitArticleForm(editId) {
   const title = document.getElementById('newArtTitle').value.trim();
   const cat = document.getElementById('newArtCat').value;
   const excerpt = document.getElementById('newArtExcerpt').value.trim();
@@ -814,20 +868,25 @@ async function submitNewArticle() {
   if (bodyEditor.querySelector('[data-uploading]')) { alert('画像をアップロード中です。少し待ってからもう一度お試しください。'); return; }
 
   const btn = document.getElementById('submitArtBtn');
-  btn.disabled = true; btn.textContent = '追加中...';
+  btn.disabled = true; btn.textContent = editId ? '保存中...' : '追加中...';
   try {
     let thumbKey = null;
     if (stagedThumb) {
       const uploaded = await uploadFile(stagedThumb.file, 'thumbs');
       thumbKey = uploaded.key;
     }
-    await api.post('/api/articles', { cat, title, excerpt, articleBody: body, richBody: true, thumbKey });
+    if (editId) {
+      await api.put('/api/articles/' + editId, { cat, title, excerpt, articleBody: body, richBody: true, thumbKey });
+    } else {
+      await api.post('/api/articles', { cat, title, excerpt, articleBody: body, richBody: true, thumbKey });
+    }
     closeModal();
     cache.articles = (await api.get('/api/articles')).articles;
     render();
+    showToast(editId ? '記事を更新しました' : '記事を追加しました');
   } catch (e) {
-    alert('記事の追加に失敗しました: ' + e.message);
-    btn.disabled = false; btn.textContent = '記事を追加する';
+    alert((editId ? '記事の更新' : '記事の追加') + 'に失敗しました: ' + e.message);
+    btn.disabled = false; btn.textContent = editId ? '保存する' : '記事を追加する';
   }
 }
 function openArticle(id) {
@@ -864,9 +923,14 @@ function viewVideos() {
   html += '<div class="grid cols-3">';
   cache.videos.forEach((v, i) => {
     const thumbStyle = v.thumb ? '' : 'background:linear-gradient(135deg,#1c1f24,'+PALETTE_DARK[i%3]+');';
+    const adminBtns = currentUser.role === 'admin'
+      ? '<div class="admin-card-actions" style="display:flex;gap:6px;margin-top:8px;">'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();openVideoEditModal('+v.id+')">'+icon('pen',12)+' 編集</button>'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();deleteVideo('+v.id+')">'+icon('trash',12)+' 削除</button></div>'
+      : '';
     html += '<div class="video-card" style="--accent:'+rgba(PALETTE[i%3],.4)+';" onclick="openVideoModal('+v.id+')">'
       + '<div class="video-thumb" style="'+thumbStyle+'">'+(v.thumb?'<img src="'+v.thumb+'">':'')+'<span class="play-circle">'+icon('play',22)+'</span><span class="dur">'+v.dur+'</span></div>'
-      + '<div class="v-body"><div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;"><span class="tag blue">'+v.cat+'</span>'+(v.isNew?'<span class="badge-new">NEW</span>':'')+'</div><h4>'+escapeHtml(v.title)+'</h4><div class="page-sub">'+v.date+'</div></div></div>';
+      + '<div class="v-body"><div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;"><span class="tag blue">'+v.cat+'</span>'+(v.isNew?'<span class="badge-new">NEW</span>':'')+'</div><h4>'+escapeHtml(v.title)+'</h4><div class="page-sub">'+v.date+'</div>'+adminBtns+'</div></div>';
   });
   html += '</div>';
   if (cache.videos.length === 0) html += '<div class="page-sub" style="margin-top:20px;">動画がまだありません。</div>';
@@ -881,17 +945,20 @@ function openVideoModal(id) {
     + embedHtml
     + '<div class="hint-box">動画はまいさんがYouTube／Vimeoにアップロードして限定公開URLを登録すると、このページに反映されます。</div>');
 }
-function openAddVideoModal() {
+function openAddVideoModal() { openVideoFormModal(null); }
+function openVideoEditModal(id) { openVideoFormModal(id); }
+function openVideoFormModal(editId) {
   stagedThumb = null;
-  showModal('<h2>動画を追加</h2>'
-    + '<div class="form-group"><label>タイトル</label><input type="text" id="newVidTitle" placeholder="動画タイトル"></div>'
-    + '<div class="form-group"><label>カテゴリ</label><select id="newVidCat">' + CATEGORIES.map(c => '<option value="'+c+'">'+c+'</option>').join('') + '</select></div>'
-    + '<div class="form-group"><label>再生時間</label><input type="text" id="newVidDur" placeholder="例：24:30"></div>'
-    + '<div class="form-group"><label>YouTube／Vimeoの限定公開URL（埋め込み用）</label><input type="url" id="newVidUrl" placeholder="https://..."></div>'
+  const editing = editId ? cache.videos.find(v => v.id === editId) : null;
+  showModal('<h2>' + (editing ? '動画を編集' : '動画を追加') + '</h2>'
+    + '<div class="form-group"><label>タイトル</label><input type="text" id="newVidTitle" placeholder="動画タイトル" value="'+(editing?escapeHtml(editing.title):'')+'"></div>'
+    + '<div class="form-group"><label>カテゴリ</label><select id="newVidCat">' + CATEGORIES.map(c => '<option value="'+c+'"'+(editing&&editing.cat===c?' selected':'')+'>'+c+'</option>').join('') + '</select></div>'
+    + '<div class="form-group"><label>再生時間</label><input type="text" id="newVidDur" placeholder="例：24:30" value="'+(editing?escapeHtml(editing.dur):'')+'"></div>'
+    + '<div class="form-group"><label>YouTube／Vimeoの限定公開URL（埋め込み用）</label><input type="url" id="newVidUrl" placeholder="https://..." value="'+(editing&&editing.videoUrl?escapeHtml(editing.videoUrl):'')+'"></div>'
     + thumbUploadFieldHTML('newVidThumbFile', 'vidThumbPreview')
-    + '<button class="btn" id="submitVidBtn" onclick="submitNewVideo()">動画を追加する</button>');
+    + '<button class="btn" id="submitVidBtn" onclick="submitVideoForm('+(editId||'null')+')">'+(editing?'保存する':'動画を追加する')+'</button>');
 }
-async function submitNewVideo() {
+async function submitVideoForm(editId) {
   const title = document.getElementById('newVidTitle').value.trim();
   const cat = document.getElementById('newVidCat').value;
   const dur = document.getElementById('newVidDur').value.trim() || '--:--';
@@ -899,18 +966,29 @@ async function submitNewVideo() {
   if (!title) { alert('タイトルを入力してください。'); return; }
 
   const btn = document.getElementById('submitVidBtn');
-  btn.disabled = true; btn.textContent = '追加中...';
+  btn.disabled = true; btn.textContent = editId ? '保存中...' : '追加中...';
   try {
     let thumbKey = null;
     if (stagedThumb) { thumbKey = (await uploadFile(stagedThumb.file, 'thumbs')).key; }
-    await api.post('/api/videos', { cat, title, dur, videoUrl, thumbKey });
+    if (editId) { await api.put('/api/videos/' + editId, { cat, title, dur, videoUrl, thumbKey }); }
+    else { await api.post('/api/videos', { cat, title, dur, videoUrl, thumbKey }); }
     closeModal();
     cache.videos = (await api.get('/api/videos')).videos;
     render();
+    showToast(editId ? '動画を更新しました' : '動画を追加しました');
   } catch (e) {
-    alert('動画の追加に失敗しました: ' + e.message);
-    btn.disabled = false; btn.textContent = '動画を追加する';
+    alert((editId?'動画の更新':'動画の追加') + 'に失敗しました: ' + e.message);
+    btn.disabled = false; btn.textContent = editId ? '保存する' : '動画を追加する';
   }
+}
+async function deleteVideo(id) {
+  if (!confirm('この動画を削除します。よろしいですか？')) return;
+  try {
+    await api.del('/api/videos/' + id);
+    cache.videos = (await api.get('/api/videos')).videos;
+    render();
+    showToast('動画を削除しました');
+  } catch (e) { showToast('削除に失敗しました: ' + e.message); }
 }
 
 /* =======================================================
@@ -926,25 +1004,46 @@ function viewFiles() {
   cache.filesList.forEach(f => {
     const color = colorMap[f.type] || PALETTE[0];
     const heavy = f.type === 'PSD';
+    const adminBtns = currentUser.role === 'admin'
+      ? '<button class="btn secondary sm" style="margin-left:8px;" onclick="openFileEditModal('+f.id+')">'+icon('pen',14)+'</button>'
+        + '<button class="btn secondary sm" style="margin-left:6px;" onclick="deleteMaterialFile('+f.id+')">'+icon('trash',14)+'</button>' : '';
     html += '<div class="file-row"><div class="file-icon" style="background:'+color+';">'+f.type+'</div>'
-      + '<div style="flex:1;"><div class="f-name">'+escapeHtml(f.name)+(heavy?' <span class="tag" style="margin-left:6px;">大容量</span>':'')+'</div><div class="f-meta">'+f.size+' ・ '+f.date+'</div></div>'
-      + '<a class="btn secondary sm" href="'+f.url+'" download="'+escapeHtml(f.name)+'">'+icon('download',14)+' ダウンロード</a></div>';
+      + '<div style="flex:1;"><div class="f-name">'+escapeHtml(f.name)+(heavy?' <span class="tag" style="margin-left:6px;">大容量</span>':'')+(f.hasPassword?' <span class="tag" style="margin-left:6px;">'+icon('paperclip',10)+' パスワード付き</span>':'')+'</div><div class="f-meta">'+f.size+' ・ '+f.date+'</div></div>'
+      + '<button class="btn secondary sm" onclick="downloadMaterialFile('+f.id+',\''+escapeHtml(f.name)+'\','+(f.hasPassword?'true':'false')+')">'+icon('download',14)+' ダウンロード</button>'+adminBtns+'</div>';
   });
   html += '</div>';
   if (cache.filesList.length === 0) html += '<div class="page-sub" style="margin-top:12px;">資料がまだありません。</div>';
-  html += '<div class="hint-box">PSDなど容量の大きいデータもここから直接アップロード・ダウンロードできます（Cloudflare R2に保存されます）。</div>';
+  html += '<div class="hint-box">PSDなど容量の大きいデータもここから直接アップロード・ダウンロードできます（Cloudflare R2に保存されます）。パスワードを設定した資料は、入力しないとダウンロードできません。</div>';
   return html;
 }
-function openAddFileModal() {
+function downloadMaterialFile(id, name, hasPassword) {
+  const f = cache.filesList.find(x => x.id === id);
+  if (!f) return;
+  if (hasPassword) {
+    const pw = prompt('この資料はパスワードで保護されています。パスワードを入力してください。');
+    if (pw === null) return;
+    window.location.href = f.downloadUrl + '?password=' + encodeURIComponent(pw);
+  } else {
+    window.location.href = f.downloadUrl;
+  }
+}
+function openAddFileModal() { openFileFormModal(null); }
+function openFileEditModal(id) { openFileFormModal(id); }
+function openFileFormModal(editId) {
   stagedMaterialFile = null;
-  showModal('<h2>資料を追加</h2>'
-    + '<div class="form-group"><label>ファイル名（一覧に表示される名前）</label><input type="text" id="newFileName" placeholder="例：競合分析シート.xlsx"></div>'
-    + '<div class="form-group"><label>種類</label><select id="newFileType"><option value="PDF">PDF</option><option value="Excel">Excel</option><option value="Sheet">Googleスプレッドシート（リンク）</option><option value="PSD">PSD</option></select></div>'
-    + '<div class="form-group"><label>ファイル</label>'
-    + '<input type="file" id="newFileInput" style="display:none" onchange="handleMaterialFileUpload(this)">'
-    + '<button class="btn secondary sm" type="button" onclick="document.getElementById(\'newFileInput\').click()">'+icon('paperclip',13)+' ファイルを選択</button>'
-    + '<div id="fileMaterialPreview" class="thumb-preview"></div></div>'
-    + '<button class="btn" id="submitFileBtn" onclick="submitNewFile()">資料を追加する</button>');
+  const editing = editId ? cache.filesList.find(f => f.id === editId) : null;
+  showModal('<h2>' + (editing ? '資料を編集' : '資料を追加') + '</h2>'
+    + '<div class="form-group"><label>ファイル名（一覧に表示される名前）</label><input type="text" id="newFileName" placeholder="例：競合分析シート.xlsx" value="'+(editing?escapeHtml(editing.name):'')+'"></div>'
+    + '<div class="form-group"><label>種類</label><select id="newFileType">'
+      + ['PDF','Excel','Sheet','PSD'].map(t => '<option value="'+t+'"'+(editing&&editing.type===t?' selected':'')+'>'+(t==='Sheet'?'Googleスプレッドシート（リンク）':t)+'</option>').join('')
+      + '</select></div>'
+    + (editing ? '' : ('<div class="form-group"><label>ファイル</label>'
+      + '<input type="file" id="newFileInput" style="display:none" onchange="handleMaterialFileUpload(this)">'
+      + '<button class="btn secondary sm" type="button" onclick="document.getElementById(\'newFileInput\').click()">'+icon('paperclip',13)+' ファイルを選択</button>'
+      + '<div id="fileMaterialPreview" class="thumb-preview"></div></div>'))
+    + '<div class="form-group"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="fileUsePassword" '+(editing&&editing.hasPassword?'checked':'')+' onchange="document.getElementById(\'fileWrap\').style.display=this.checked?\'block\':\'none\'" style="width:15px;height:15px;"> パスワードを設定する</label>'
+      + '<div id="fileWrap" style="display:'+(editing&&editing.hasPassword?'block':'none')+';margin-top:6px;"><input type="text" id="newFilePassword" placeholder="'+(editing?'変更する場合のみ入力（未入力なら現在のまま）':'ダウンロード時に必要なパスワード')+'"></div></div>'
+    + '<button class="btn" id="submitFileBtn" onclick="submitFileForm('+(editId||'null')+')">'+(editing?'保存する':'資料を追加する')+'</button>');
 }
 function handleMaterialFileUpload(input) {
   const file = input.files[0];
@@ -954,23 +1053,43 @@ function handleMaterialFileUpload(input) {
   if (preview) preview.innerHTML = '<div class="file-row" style="margin-top:8px;"><div class="file-icon" style="background:'+PALETTE[2]+';">FILE</div><div style="flex:1;"><div class="f-name">'+escapeHtml(file.name)+'</div></div></div>';
   if (!document.getElementById('newFileName').value.trim()) document.getElementById('newFileName').value = file.name;
 }
-async function submitNewFile() {
+async function submitFileForm(editId) {
   const name = document.getElementById('newFileName').value.trim();
   const type = document.getElementById('newFileType').value;
   if (!name) { alert('ファイル名を入力してください。'); return; }
-  if (!stagedMaterialFile) { alert('ファイルを選択してください。'); return; }
+  if (!editId && !stagedMaterialFile) { alert('ファイルを選択してください。'); return; }
+  const usePassword = document.getElementById('fileUsePassword').checked;
+  const pwInput = document.getElementById('newFilePassword').value;
+  if (!editId && usePassword && !pwInput) { alert('パスワードを入力してください。'); return; }
   const btn = document.getElementById('submitFileBtn');
-  btn.disabled = true; btn.textContent = '追加中...';
+  btn.disabled = true; btn.textContent = editId ? '保存中...' : '追加中...';
   try {
-    const uploaded = await uploadFile(stagedMaterialFile.file, 'materials');
-    await api.post('/api/files-list', { name, type, size: uploaded.size, storageKey: uploaded.key });
+    if (editId) {
+      const payload = { name, type };
+      if (!usePassword) { payload.password = ''; }
+      else if (pwInput) { payload.password = pwInput; }
+      await api.put('/api/files-list/' + editId, payload);
+    } else {
+      const uploaded = await uploadFile(stagedMaterialFile.file, 'materials');
+      await api.post('/api/files-list', { name, type, size: uploaded.size, storageKey: uploaded.key, password: usePassword ? pwInput : '' });
+    }
     closeModal();
     cache.filesList = (await api.get('/api/files-list')).files;
     render();
+    showToast(editId ? '資料を更新しました' : '資料を追加しました');
   } catch (e) {
-    alert('資料の追加に失敗しました: ' + e.message);
-    btn.disabled = false; btn.textContent = '資料を追加する';
+    alert((editId?'資料の更新':'資料の追加') + 'に失敗しました: ' + e.message);
+    btn.disabled = false; btn.textContent = editId ? '保存する' : '資料を追加する';
   }
+}
+async function deleteMaterialFile(id) {
+  if (!confirm('この資料を削除します。よろしいですか？')) return;
+  try {
+    await api.del('/api/files-list/' + id);
+    cache.filesList = (await api.get('/api/files-list')).files;
+    render();
+    showToast('資料を削除しました');
+  } catch (e) { showToast('削除に失敗しました: ' + e.message); }
 }
 
 /* =======================================================
@@ -990,6 +1109,9 @@ function viewAnalysisList() {
     if (currentUser.role === 'admin') {
       const st = cache.assignmentStatus[a.id];
       html += '<div class="asg-status-row"><span class="tag blue">'+(st?st.submittedCount:'-')+' / '+(st?st.total:'-')+'人 提出済み</span></div>';
+      html += '<div class="admin-card-actions" style="display:flex;gap:6px;margin-top:8px;">'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();openAssignmentEditModal('+a.id+')">'+icon('pen',12)+' 編集</button>'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();deleteAssignment('+a.id+')">'+icon('trash',12)+' 削除</button></div>';
     } else {
       html += '<div class="asg-status-row"><span class="tag'+(a.submitted?' blue':'')+'">'+(a.submitted?'提出済み':'未提出')+'</span></div>';
     }
@@ -1000,36 +1122,50 @@ function viewAnalysisList() {
   return html;
 }
 function openAnalysis(id) { state.selectedAssignmentId = id; appNav('analysisDetail'); }
-function openAddAssignmentModal() {
+function openAddAssignmentModal() { openAssignmentFormModal(null); }
+function openAssignmentEditModal(id) { openAssignmentFormModal(id); }
+function openAssignmentFormModal(editId) {
   stagedThumb = null;
+  const editing = editId ? cache.assignments.find(a => a.id === editId) : null;
   const nextNum = cache.assignments.length + 1;
-  showModal('<h2>LP分析課題を追加</h2>'
-    + '<div class="form-group"><label>課題名</label><input type="text" id="newAsgTitle" placeholder="課題'+nextNum+'（未入力の場合は自動で採番されます）"></div>'
-    + '<div class="form-group"><label>LP名（ラベル）</label><input type="text" id="newAsgLabel" placeholder="例：化粧品LP"></div>'
-    + '<div class="form-group"><label>分析してもらいたいLPのURL</label><input type="url" id="newAsgUrl" placeholder="https://..."></div>'
-    + '<div class="form-group"><label>説明文</label><textarea id="newAsgDesc" placeholder="どんな観点で見てほしいか、補足があれば書いてください"></textarea></div>'
+  showModal('<h2>' + (editing ? 'LP分析課題を編集' : 'LP分析課題を追加') + '</h2>'
+    + '<div class="form-group"><label>課題名</label><input type="text" id="newAsgTitle" placeholder="課題'+nextNum+'（未入力の場合は自動で採番されます）" value="'+(editing?escapeHtml(editing.title):'')+'"></div>'
+    + '<div class="form-group"><label>LP名（ラベル）</label><input type="text" id="newAsgLabel" placeholder="例：化粧品LP" value="'+(editing?escapeHtml(editing.label):'')+'"></div>'
+    + '<div class="form-group"><label>分析してもらいたいLPのURL</label><input type="url" id="newAsgUrl" placeholder="https://..." value="'+(editing?escapeHtml(editing.url||''):'')+'"></div>'
+    + '<div class="form-group"><label>説明文</label><textarea id="newAsgDesc" placeholder="どんな観点で見てほしいか、補足があれば書いてください">'+(editing?escapeHtml(editing.desc):'')+'</textarea></div>'
     + thumbUploadFieldHTML('newAsgThumbFile', 'asgThumbPreview')
-    + '<button class="btn" id="submitAsgBtn" onclick="submitNewAssignment()">課題を追加する</button>');
+    + '<button class="btn" id="submitAsgBtn" onclick="submitAssignmentForm('+(editId||'null')+')">'+(editing?'保存する':'課題を追加する')+'</button>');
 }
-async function submitNewAssignment() {
+async function submitAssignmentForm(editId) {
   const label = document.getElementById('newAsgLabel').value.trim();
   const url = document.getElementById('newAsgUrl').value.trim();
   const desc = document.getElementById('newAsgDesc').value.trim();
   const title = document.getElementById('newAsgTitle').value.trim();
   if (!label || !url) { alert('LP名とURLを入力してください。'); return; }
   const btn = document.getElementById('submitAsgBtn');
-  btn.disabled = true; btn.textContent = '追加中...';
+  btn.disabled = true; btn.textContent = editId ? '保存中...' : '追加中...';
   try {
     let thumbKey = null;
     if (stagedThumb) { thumbKey = (await uploadFile(stagedThumb.file, 'thumbs')).key; }
-    await api.post('/api/assignments', { title, label, desc, url, thumbKey });
+    if (editId) { await api.put('/api/assignments/' + editId, { title, label, desc, url, thumbKey }); }
+    else { await api.post('/api/assignments', { title, label, desc, url, thumbKey }); }
     closeModal();
     cache.assignments = (await api.get('/api/assignments')).assignments;
     render();
+    showToast(editId ? '課題を更新しました' : '課題を追加しました');
   } catch (e) {
-    alert('課題の追加に失敗しました: ' + e.message);
-    btn.disabled = false; btn.textContent = '課題を追加する';
+    alert((editId?'課題の更新':'課題の追加') + 'に失敗しました: ' + e.message);
+    btn.disabled = false; btn.textContent = editId ? '保存する' : '課題を追加する';
   }
+}
+async function deleteAssignment(id) {
+  if (!confirm('この課題を削除します。よろしいですか？（受講生の回答も削除されます）')) return;
+  try {
+    await api.del('/api/assignments/' + id);
+    cache.assignments = (await api.get('/api/assignments')).assignments;
+    render();
+    showToast('課題を削除しました');
+  } catch (e) { showToast('削除に失敗しました: ' + e.message); }
 }
 function viewAnalysisDetail() {
   const a = cache.assignments.find(x => x.id === state.selectedAssignmentId);
@@ -1141,6 +1277,9 @@ function viewPhotoTaskList() {
     if (currentUser.role === 'admin') {
       const st = cache.photoTaskStatus[t.id];
       html += '<div class="asg-status-row"><span class="tag blue">'+(st?st.submittedCount:'-')+' / '+(st?st.total:'-')+'人 提出済み</span></div>';
+      html += '<div class="admin-card-actions" style="display:flex;gap:6px;margin-top:8px;">'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();openPhotoTaskEditModal('+t.id+')">'+icon('pen',12)+' 編集</button>'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();deletePhotoTask('+t.id+')">'+icon('trash',12)+' 削除</button></div>';
     } else {
       html += '<div class="asg-status-row"><span class="tag'+(t.submitted?' blue':'')+'">'+(t.submitted?'提出済み':'未提出')+'</span></div>';
     }
@@ -1159,27 +1298,30 @@ function handlePsdFileUpload(input) {
   const preview = document.getElementById('photoFilePreview');
   if (preview) preview.innerHTML = '<div class="file-row" style="margin-top:8px;"><div class="file-icon" style="background:#5b4fc9;">PSD</div><div style="flex:1;"><div class="f-name">'+escapeHtml(file.name)+'</div></div></div>';
 }
-function openAddPhotoTaskModal() {
+function openAddPhotoTaskModal() { openPhotoTaskFormModal(null); }
+function openPhotoTaskEditModal(id) { openPhotoTaskFormModal(id); }
+function openPhotoTaskFormModal(editId) {
   stagedThumb = null; stagedPsdFile = null;
+  const editing = editId ? cache.photoTasks.find(t => t.id === editId) : null;
   const nextNum = cache.photoTasks.length + 1;
-  showModal('<h2>写真・補正課題を追加</h2>'
-    + '<div class="form-group"><label>課題名</label><input type="text" id="newPhotoTitle" placeholder="補正課題'+nextNum+'（未入力の場合は自動で採番されます）"></div>'
-    + '<div class="form-group"><label>課題ラベル</label><input type="text" id="newPhotoLabel" placeholder="例：商品写真の色補正"></div>'
-    + '<div class="form-group"><label>説明文</label><textarea id="newPhotoDesc" placeholder="どんな補正・作業をしてほしいか説明してください"></textarea></div>'
-    + '<div class="form-group"><label>課題データ（PSDファイルなど）</label>'
+  showModal('<h2>' + (editing ? '写真・補正課題を編集' : '写真・補正課題を追加') + '</h2>'
+    + '<div class="form-group"><label>課題名</label><input type="text" id="newPhotoTitle" placeholder="補正課題'+nextNum+'（未入力の場合は自動で採番されます）" value="'+(editing?escapeHtml(editing.title):'')+'"></div>'
+    + '<div class="form-group"><label>課題ラベル</label><input type="text" id="newPhotoLabel" placeholder="例：商品写真の色補正" value="'+(editing?escapeHtml(editing.label):'')+'"></div>'
+    + '<div class="form-group"><label>説明文</label><textarea id="newPhotoDesc" placeholder="どんな補正・作業をしてほしいか説明してください">'+(editing?escapeHtml(editing.desc):'')+'</textarea></div>'
+    + '<div class="form-group"><label>課題データ（PSDファイルなど）'+(editing?'　<span style="font-size:11px;color:var(--sub);">現在: '+escapeHtml(editing.fileName||'未設定')+'（変更する場合のみ選択）</span>':'')+'</label>'
     + '<input type="file" id="newPhotoFile" style="display:none" onchange="handlePsdFileUpload(this)">'
     + '<button class="btn secondary sm" type="button" onclick="document.getElementById(\'newPhotoFile\').click()">'+icon('paperclip',13)+' ファイルを選択</button>'
     + '<div id="photoFilePreview" class="thumb-preview"></div></div>'
     + thumbUploadFieldHTML('newPhotoThumbFile', 'photoThumbPreview')
-    + '<button class="btn" id="submitPhotoTaskBtn" onclick="submitNewPhotoTask()">課題を追加する</button>');
+    + '<button class="btn" id="submitPhotoTaskBtn" onclick="submitPhotoTaskForm('+(editId||'null')+')">'+(editing?'保存する':'課題を追加する')+'</button>');
 }
-async function submitNewPhotoTask() {
+async function submitPhotoTaskForm(editId) {
   const label = document.getElementById('newPhotoLabel').value.trim();
   const desc = document.getElementById('newPhotoDesc').value.trim();
   const title = document.getElementById('newPhotoTitle').value.trim();
   if (!label || !desc) { alert('課題ラベルと説明文を入力してください。'); return; }
   const btn = document.getElementById('submitPhotoTaskBtn');
-  btn.disabled = true; btn.textContent = '追加中...';
+  btn.disabled = true; btn.textContent = editId ? '保存中...' : '追加中...';
   try {
     let fileKey = null, fileName = null, fileSize = null;
     if (stagedPsdFile) {
@@ -1188,14 +1330,25 @@ async function submitNewPhotoTask() {
     }
     let thumbKey = null;
     if (stagedThumb) { thumbKey = (await uploadFile(stagedThumb.file, 'thumbs')).key; }
-    await api.post('/api/photo-tasks', { title, label, desc, fileKey, fileName, fileSize, thumbKey });
+    if (editId) { await api.put('/api/photo-tasks/' + editId, { title, label, desc, fileKey, fileName, fileSize, thumbKey }); }
+    else { await api.post('/api/photo-tasks', { title, label, desc, fileKey, fileName, fileSize, thumbKey }); }
     closeModal();
     cache.photoTasks = (await api.get('/api/photo-tasks')).tasks;
     render();
+    showToast(editId ? '課題を更新しました' : '課題を追加しました');
   } catch (e) {
-    alert('課題の追加に失敗しました: ' + e.message);
-    btn.disabled = false; btn.textContent = '課題を追加する';
+    alert((editId?'課題の更新':'課題の追加') + 'に失敗しました: ' + e.message);
+    btn.disabled = false; btn.textContent = editId ? '保存する' : '課題を追加する';
   }
+}
+async function deletePhotoTask(id) {
+  if (!confirm('この課題を削除します。よろしいですか？（受講生の提出物も削除されます）')) return;
+  try {
+    await api.del('/api/photo-tasks/' + id);
+    cache.photoTasks = (await api.get('/api/photo-tasks')).tasks;
+    render();
+    showToast('課題を削除しました');
+  } catch (e) { showToast('削除に失敗しました: ' + e.message); }
 }
 
 function handleSubmissionFileUpload(input) {
@@ -1287,25 +1440,119 @@ function viewPhotoTaskDetail() {
 }
 
 /* =======================================================
-   VIEW: GALLERY / ZUKAN（見た目確認用の固定サンプル）
+   VIEW: GALLERY / ZUKAN（管理画面から追加・編集・削除できます）
 ======================================================= */
 function viewGallery() {
   let html = '<div class="page-head"><div class="page-title">ギャラリー部屋</div><div class="page-sub">まいさんが手がけたデザインを自由に見られる部屋です。</div></div>';
+  if (currentUser.role === 'admin') {
+    html += '<div style="margin-bottom:16px;"><button class="btn" onclick="openGalleryFormModal(null)">'+icon('pen',13)+' 作品を追加</button></div>';
+  }
   html += '<div class="grid cols-3">';
-  GALLERY.forEach((g, i) => {
-    html += '<div class="gallery-card" style="--accent:'+rgba(PALETTE[i%3],.4)+';">'+mockLP(i,false)+'<div class="g-body"><span class="tag">'+g.tag+'</span><h4 style="font-size:13px;margin-top:8px;">'+g.title+'</h4></div></div>';
+  cache.gallery.forEach((g, i) => {
+    const adminBtns = currentUser.role === 'admin'
+      ? '<div class="admin-card-actions" style="display:flex;gap:6px;margin-top:8px;">'
+        + '<button class="btn secondary sm" onclick="openGalleryFormModal('+g.id+')">'+icon('pen',12)+' 編集</button>'
+        + '<button class="btn secondary sm" onclick="deleteGalleryItem('+g.id+')">'+icon('trash',12)+' 削除</button></div>'
+      : '';
+    html += '<div class="gallery-card" style="--accent:'+rgba(PALETTE[i%3],.4)+';">'+(g.thumb?'<img src="'+g.thumb+'" style="width:100%;aspect-ratio:1280/670;object-fit:cover;display:block;">':mockLP(i,false))+'<div class="g-body"><span class="tag">'+escapeHtml(g.tag)+'</span><h4 style="font-size:13px;margin-top:8px;">'+escapeHtml(g.title)+'</h4>'+adminBtns+'</div></div>';
   });
   html += '</div>';
+  if (cache.gallery.length === 0) html += '<div class="page-sub" style="margin-top:20px;">作品がまだありません。</div>';
   return html;
+}
+function openGalleryFormModal(editId) {
+  stagedThumb = null;
+  const editing = editId ? cache.gallery.find(g => g.id === editId) : null;
+  showModal('<h2>' + (editing ? '作品を編集' : '作品を追加') + '</h2>'
+    + '<div class="form-group"><label>タイトル</label><input type="text" id="newGalTitle" placeholder="例：化粧品LP／美容液" value="'+(editing?escapeHtml(editing.title):'')+'"></div>'
+    + '<div class="form-group"><label>タグ（業種など）</label><input type="text" id="newGalTag" placeholder="例：化粧品" value="'+(editing?escapeHtml(editing.tag):'')+'"></div>'
+    + thumbUploadFieldHTML('newGalThumbFile', 'galThumbPreview')
+    + '<button class="btn" id="submitGalBtn" onclick="submitGalleryForm('+(editId||'null')+')">'+(editing?'保存する':'作品を追加する')+'</button>');
+}
+async function submitGalleryForm(editId) {
+  const title = document.getElementById('newGalTitle').value.trim();
+  const tag = document.getElementById('newGalTag').value.trim();
+  if (!title || !tag) { alert('タイトルとタグを入力してください。'); return; }
+  const btn = document.getElementById('submitGalBtn');
+  btn.disabled = true; btn.textContent = editId ? '保存中...' : '追加中...';
+  try {
+    let thumbKey = null;
+    if (stagedThumb) { thumbKey = (await uploadFile(stagedThumb.file, 'thumbs')).key; }
+    if (editId) { await api.put('/api/gallery/' + editId, { title, tag, thumbKey }); }
+    else { await api.post('/api/gallery', { title, tag, thumbKey }); }
+    closeModal();
+    cache.gallery = (await api.get('/api/gallery')).items;
+    render();
+    showToast(editId ? '作品を更新しました' : '作品を追加しました');
+  } catch (e) {
+    alert((editId?'更新':'追加') + 'に失敗しました: ' + e.message);
+    btn.disabled = false; btn.textContent = editId ? '保存する' : '作品を追加する';
+  }
+}
+async function deleteGalleryItem(id) {
+  if (!confirm('この作品を削除します。よろしいですか？')) return;
+  try {
+    await api.del('/api/gallery/' + id);
+    cache.gallery = (await api.get('/api/gallery')).items;
+    render();
+    showToast('作品を削除しました');
+  } catch (e) { showToast('削除に失敗しました: ' + e.message); }
 }
 function viewZukan() {
   let html = '<div class="page-head"><div class="page-title">通販デザイン図鑑</div><div class="page-sub">まいさんが良いと思ったデザインを集めて解説しています。</div></div>';
+  if (currentUser.role === 'admin') {
+    html += '<div style="margin-bottom:16px;"><button class="btn" onclick="openZukanFormModal(null)">'+icon('pen',13)+' 事例を追加</button></div>';
+  }
   html += '<div class="grid cols-2">';
-  ZUKAN.forEach((z, i) => {
-    html += '<div class="zukan-card" style="--accent:'+rgba(PALETTE[(i+1)%3],.4)+';"><div style="padding:14px;">'+mockLP(i+1,true)+'<div class="z-body" style="padding:0;"><h4 style="font-size:14px;margin-top:12px;">'+z.title+'</h4><div class="z-comment">'+z.comment+'</div></div></div></div>';
+  cache.zukan.forEach((z, i) => {
+    const adminBtns = currentUser.role === 'admin'
+      ? '<div class="admin-card-actions" style="display:flex;gap:6px;margin-top:8px;">'
+        + '<button class="btn secondary sm" onclick="openZukanFormModal('+z.id+')">'+icon('pen',12)+' 編集</button>'
+        + '<button class="btn secondary sm" onclick="deleteZukanItem('+z.id+')">'+icon('trash',12)+' 削除</button></div>'
+      : '';
+    html += '<div class="zukan-card" style="--accent:'+rgba(PALETTE[(i+1)%3],.4)+';"><div style="padding:14px;">'+(z.thumb?'<img src="'+z.thumb+'" style="width:100%;aspect-ratio:1280/670;object-fit:cover;border-radius:9px;display:block;">':mockLP(i+1,true))+'<div class="z-body" style="padding:0;"><h4 style="font-size:14px;margin-top:12px;">'+escapeHtml(z.title)+'</h4><div class="z-comment">'+escapeHtml(z.comment)+'</div>'+adminBtns+'</div></div></div>';
   });
   html += '</div>';
+  if (cache.zukan.length === 0) html += '<div class="page-sub" style="margin-top:20px;">事例がまだありません。</div>';
   return html;
+}
+function openZukanFormModal(editId) {
+  stagedThumb = null;
+  const editing = editId ? cache.zukan.find(z => z.id === editId) : null;
+  showModal('<h2>' + (editing ? '事例を編集' : '事例を追加') + '</h2>'
+    + '<div class="form-group"><label>タイトル</label><input type="text" id="newZukTitle" placeholder="例：化粧品LP" value="'+(editing?escapeHtml(editing.title):'')+'"></div>'
+    + '<div class="form-group"><label>解説コメント</label><textarea id="newZukComment" placeholder="デザインの良い点を解説してください">'+(editing?escapeHtml(editing.comment):'')+'</textarea></div>'
+    + thumbUploadFieldHTML('newZukThumbFile', 'zukThumbPreview')
+    + '<button class="btn" id="submitZukBtn" onclick="submitZukanForm('+(editId||'null')+')">'+(editing?'保存する':'事例を追加する')+'</button>');
+}
+async function submitZukanForm(editId) {
+  const title = document.getElementById('newZukTitle').value.trim();
+  const comment = document.getElementById('newZukComment').value.trim();
+  if (!title || !comment) { alert('タイトルと解説コメントを入力してください。'); return; }
+  const btn = document.getElementById('submitZukBtn');
+  btn.disabled = true; btn.textContent = editId ? '保存中...' : '追加中...';
+  try {
+    let thumbKey = null;
+    if (stagedThumb) { thumbKey = (await uploadFile(stagedThumb.file, 'thumbs')).key; }
+    if (editId) { await api.put('/api/zukan/' + editId, { title, comment, thumbKey }); }
+    else { await api.post('/api/zukan', { title, comment, thumbKey }); }
+    closeModal();
+    cache.zukan = (await api.get('/api/zukan')).items;
+    render();
+    showToast(editId ? '事例を更新しました' : '事例を追加しました');
+  } catch (e) {
+    alert((editId?'更新':'追加') + 'に失敗しました: ' + e.message);
+    btn.disabled = false; btn.textContent = editId ? '保存する' : '事例を追加する';
+  }
+}
+async function deleteZukanItem(id) {
+  if (!confirm('この事例を削除します。よろしいですか？')) return;
+  try {
+    await api.del('/api/zukan/' + id);
+    cache.zukan = (await api.get('/api/zukan')).items;
+    render();
+    showToast('事例を削除しました');
+  } catch (e) { showToast('削除に失敗しました: ' + e.message); }
 }
 
 /* =======================================================
@@ -1332,9 +1579,9 @@ function viewAdmin() {
   html += '</tbody></table></div>';
 
   html += '<div class="card mb14"><div class="section-title">受講生アカウント<span class="more" onclick="openAddStudentModal()">＋ 受講生を招待</span></div>';
-  html += '<table><thead><tr><th>氏名</th><th>メールアドレス</th><th>入会日</th></tr></thead><tbody>';
+  html += '<table><thead><tr><th>氏名</th><th>メールアドレス</th><th>入会日</th><th></th></tr></thead><tbody>';
   cache.students.forEach(st => {
-    html += '<tr><td>'+st.name+'</td><td>'+st.email+'</td><td>'+st.joined_at+'</td></tr>';
+    html += '<tr><td>'+st.name+'</td><td>'+st.email+'</td><td>'+st.joined_at+'</td><td><button class="btn secondary sm" onclick="deleteStudent('+st.id+',\''+escapeHtml(st.name)+'\')">'+icon('trash',12)+' 削除</button></td></tr>';
   });
   html += '</tbody></table>'
     + '<div class="hint-box">「＋ 受講生を招待」で発行される仮パスワードは、まいさんがチャットやメールで本人へ直接お伝えください（一度しか表示されません）。</div></div>';
@@ -1344,8 +1591,20 @@ function viewAdmin() {
     + '<button class="btn secondary" onclick="openAddVideoModal()">＋ 動画を追加</button>'
     + '<button class="btn secondary" onclick="openAddFileModal()">＋ 資料を追加</button>'
     + '<button class="btn secondary" onclick="openAddAssignmentModal()">＋ LP分析課題を追加</button>'
+    + '<button class="btn secondary" onclick="openAddPhotoTaskModal()">＋ 写真・補正課題を追加</button>'
+    + '<button class="btn secondary" onclick="openGalleryFormModal(null)">＋ ギャラリー作品を追加</button>'
+    + '<button class="btn secondary" onclick="openZukanFormModal(null)">＋ 図鑑事例を追加</button>'
     + '</div></div>';
   return html;
+}
+async function deleteStudent(id, name) {
+  if (!confirm((name||'この受講生')+'さんを削除します。日報・チャット・提出物もすべて削除されます。よろしいですか？')) return;
+  try {
+    await api.del('/api/students/' + id);
+    cache.students = (await api.get('/api/students')).students;
+    render();
+    showToast('受講生を削除しました');
+  } catch (e) { showToast('削除に失敗しました: ' + e.message); }
 }
 function openAddStudentModal() {
   showModal('<h2>受講生を招待</h2>'
