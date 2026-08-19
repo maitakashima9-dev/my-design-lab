@@ -1,4 +1,5 @@
 import { requireUser, requireAdmin, jsonResponse, errorResponse } from '../../_lib/auth.js';
+import { addAnnouncement } from '../../_lib/announce.js';
 
 // 記事一覧を取得する（ログイン済みなら受講生・管理者どちらでも閲覧可）
 export async function onRequestGet({ request, env }) {
@@ -40,6 +41,8 @@ export async function onRequestPost({ request, env }) {
     `INSERT INTO articles (cat, title, excerpt, body, rich_body, thumb_key, date)
      VALUES (?, ?, ?, ?, ?, ?, date('now'))`
   ).bind(cat, title, excerpt, articleBody, richBody ? 1 : 0, thumbKey || null).run();
+
+  await addAnnouncement(env.DB, `新着記事：「${title}」を公開しました`);
 
   return jsonResponse({ id: result.meta.last_row_id }, 201);
 }

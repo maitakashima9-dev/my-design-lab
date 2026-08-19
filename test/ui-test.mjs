@@ -149,6 +149,101 @@ async function main() {
     check('cleanup: test file deleted', await page.locator('.file-row:has-text("UIテスト資料_編集済み.txt")').count() === 0);
   }
 
+  // ===================== LP分析課題: student answer box is actually typeable =====================
+  await login(page, 'yamada@example.com', 'student-2026');
+  await page.evaluate(() => appNav('analysis'));
+  await page.waitForSelector('.assignment-card', { timeout: 10000 });
+  await page.click('.assignment-card');
+  await page.waitForSelector('details.qsection', { timeout: 10000 });
+  // open the first section (should already be open) and find its textarea
+  const firstTextarea = page.locator('.q-item textarea').first();
+  await firstTextarea.click();
+  await firstTextarea.fill('UIテストの回答内容です');
+  const typedValue = await firstTextarea.inputValue();
+  check('student CAN click and type into LP分析課題 answer box', typedValue === 'UIテストの回答内容です', typedValue);
+
+  // admin viewing the same assignment sees a read-only summary, not an editable box (by design)
+  await login(page, 'mai@example.com', 'mailab-admin-2026');
+  await page.evaluate(() => appNav('analysis'));
+  await page.waitForSelector('.assignment-card', { timeout: 10000 });
+  await page.click('.assignment-card');
+  await page.waitForSelector('details.qsection', { timeout: 10000 });
+  check('admin view has no editable answer textarea (read-only by design)', await page.locator('.q-item textarea').count() === 0);
+
+  // ===================== ギャラリー: 複数画像の追加・編集 =====================
+  await login(page, 'mai@example.com', 'mailab-admin-2026');
+  await page.evaluate(() => appNav('gallery'));
+  await page.waitForSelector('button:has-text("作品を追加")', { timeout: 10000 });
+  await page.click('button:has-text("作品を追加")');
+  await page.waitForSelector('#newGalTitle', { timeout: 10000 });
+  await page.fill('#newGalTitle', 'UIテストギャラリー');
+  await page.fill('#newGalTag', 'UIテストタグ');
+
+  const galFile1 = path.join(os.tmpdir(), 'gal-test-1.png');
+  const galFile2 = path.join(os.tmpdir(), 'gal-test-2.png');
+  const pngBase64b = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mP8z8BQz0AEYBxVSF+FABJnAQXgVQzOAAAAAElFTkSuQmCC';
+  fs.writeFileSync(galFile1, Buffer.from(pngBase64b, 'base64'));
+  fs.writeFileSync(galFile2, Buffer.from(pngBase64b, 'base64'));
+  await page.setInputFiles('#newGalImgFile', [galFile1, galFile2]);
+  await page.waitForTimeout(500);
+  check('2 images staged in preview', await page.locator('#galImgPreview .multi-thumb-item').count() === 2);
+  await page.click('#submitGalBtn');
+  await page.waitForSelector('.gallery-card:has-text("UIテストギャラリー")', { timeout: 15000 });
+  check('new gallery card shows "画像2枚"', await page.locator('.gallery-card:has-text("UIテストギャラリー")').locator('text=画像2枚').count() === 1);
+
+  // open detail view and confirm both images render without distortion (natural size, not cropped)
+  await page.click('.gallery-card:has-text("UIテストギャラリー")');
+  await page.waitForSelector('.lightbox-stack', { timeout: 10000 });
+  check('detail lightbox shows 2 images', await page.locator('.lightbox-stack img').count() === 2);
+  await page.click('.close-btn');
+
+  // cleanup
+  const galCard = page.locator('.gallery-card:has-text("UIテストギャラリー")').first();
+  await galCard.locator('button:has-text("削除")').click();
+  await page.waitForTimeout(800);
+  check('cleanup: UI test gallery item deleted', await page.locator('.gallery-card:has-text("UIテストギャラリー")').count() === 0);
+
+  // ===================== 通販図鑑: URLリンク付き =====================
+  await page.evaluate(() => appNav('zukan'));
+  await page.waitForSelector('button:has-text("事例を追加")', { timeout: 10000 });
+  await page.click('button:has-text("事例を追加")');
+  await page.waitForSelector('#newZukTitle', { timeout: 10000 });
+  await page.fill('#newZukTitle', 'UIテスト図鑑');
+  await page.fill('#newZukComment', 'UIテストコメント');
+  await page.fill('#newZukUrl', 'https://example.com/lp/ui-test');
+  await page.setInputFiles('#newZukImgFile', [galFile1]);
+  await page.waitForTimeout(500);
+  await page.click('#submitZukBtn');
+  await page.waitForSelector('.zukan-card:has-text("UIテスト図鑑")', { timeout: 15000 });
+  await page.click('.zukan-card:has-text("UIテスト図鑑")');
+  await page.waitForSelector('.lightbox-stack', { timeout: 10000 });
+  check('zukan detail shows link to LP', await page.locator('a:has-text("LPを見る")').count() === 1);
+  await page.click('.close-btn');
+  const zukCard = page.locator('.zukan-card:has-text("UIテスト図鑑")').first();
+  await zukCard.locator('button:has-text("削除")').click();
+  await page.waitForTimeout(800);
+  check('cleanup: UI test zukan item deleted', await page.locator('.zukan-card:has-text("UIテスト図鑑")').count() === 0);
+
+  // ===================== お知らせ: 記事作成で自動追加される =====================
+  await page.evaluate(() => appNav('announce'));
+  await page.waitForSelector('.a-item', { timeout: 10000 });
+  const announceCountBefore = await page.locator('.a-item').count();
+  await page.evaluate(() => appNav('articles'));
+  await page.waitForSelector('button:has-text("記事を追加")', { timeout: 10000 });
+  await page.click('button:has-text("記事を追加")');
+  await page.waitForSelector('#newArtTitle', { timeout: 10000 });
+  await page.fill('#newArtTitle', 'UIテスト記事（お知らせ連動）');
+  await page.fill('#newArtExcerpt', 'UIテスト抜粋');
+  await page.click('#newArtBody');
+  await page.keyboard.type('UIテスト本文');
+  await page.click('#submitArtBtn');
+  await page.waitForTimeout(1000);
+  await page.evaluate(() => appNav('announce'));
+  await page.waitForTimeout(500);
+  const announceCountAfter = await page.locator('.a-item').count();
+  check('announcement count increased after creating an article', announceCountAfter > announceCountBefore, { before: announceCountBefore, after: announceCountAfter });
+  check('new announcement mentions the article title', await page.locator('.a-item:has-text("UIテスト記事（お知らせ連動）")').count() >= 1);
+
   // ERR_TUNNEL_CONNECTION_FAILED is the sandbox's outbound-network proxy blocking unrelated
   // external requests (fonts/CDN), not an app bug. The single 403 is our own intentional
   // wrong-password download test, expected to fail to load as a resource.

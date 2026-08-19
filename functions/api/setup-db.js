@@ -250,6 +250,26 @@ const MIGRATE3_SQL = `
 ALTER TABLE files ADD COLUMN access_password TEXT;
 `;
 
+const MIGRATE4_SQL = `
+CREATE TABLE gallery_images (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  gallery_item_id INTEGER NOT NULL REFERENCES gallery_items(id) ON DELETE CASCADE,
+  image_key TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE zukan_images (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  zukan_item_id INTEGER NOT NULL REFERENCES zukan_items(id) ON DELETE CASCADE,
+  image_key TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+ALTER TABLE zukan_items ADD COLUMN link_url TEXT;
+CREATE INDEX idx_gallery_images_item ON gallery_images(gallery_item_id);
+CREATE INDEX idx_zukan_images_item ON zukan_images(zukan_item_id);
+`;
+
 const DEMO_PASSWORDS = {
   'mai@example.com': 'mailab-admin-2026',
   'yamada@example.com': 'student-2026',
@@ -281,6 +301,19 @@ export async function onRequestGet({ request, env }) {
   if (mode === 'migrate3') {
     const results = [];
     for (const stmt of splitStatements(MIGRATE3_SQL)) {
+      try {
+        await env.DB.prepare(stmt).run();
+        results.push({ ok: true });
+      } catch (e) {
+        results.push({ ok: false, error: String(e), stmt: stmt.slice(0, 60) });
+      }
+    }
+    return new Response(JSON.stringify(results, null, 2), { headers: { 'content-type': 'application/json' } });
+  }
+
+  if (mode === 'migrate4') {
+    const results = [];
+    for (const stmt of splitStatements(MIGRATE4_SQL)) {
       try {
         await env.DB.prepare(stmt).run();
         results.push({ ok: true });

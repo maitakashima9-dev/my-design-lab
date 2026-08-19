@@ -250,24 +250,29 @@ async function afterLogin(user) {
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
   document.getElementById('viewRoot').innerHTML = '<div class="loading-row">読み込み中...</div>';
-  await loadCoreData();
+  // loadCoreData()内の個別データ取得が失敗しても、ここで例外を投げて画面が
+  // 「読み込み中」のまま固まらないようにする（失敗した分は空データのまま表示する）。
+  const failed = await loadCoreData();
   render();
+  if (failed.length) {
+    showToast('一部のデータの読み込みに失敗しました（' + failed.join('、') + '）。時間を置いてページを再読み込みしてください。');
+  }
 }
 
 async function loadCoreData() {
-  const tasks = [
-    api.get('/api/articles').then(d => cache.articles = d.articles),
-    api.get('/api/videos').then(d => cache.videos = d.videos),
-    api.get('/api/files-list').then(d => cache.filesList = d.files),
-    api.get('/api/announcements').then(d => cache.announcements = d.announcements),
-    api.get('/api/checklist').then(d => cache.checklist = d.checklist),
-    api.get('/api/assignments').then(d => cache.assignments = d.assignments),
-    api.get('/api/photo-tasks').then(d => cache.photoTasks = d.tasks),
-    api.get('/api/gallery').then(d => cache.gallery = d.items),
-    api.get('/api/zukan').then(d => cache.zukan = d.items),
+  const jobs = [
+    ['記事', () => api.get('/api/articles').then(d => cache.articles = d.articles)],
+    ['動画', () => api.get('/api/videos').then(d => cache.videos = d.videos)],
+    ['資料', () => api.get('/api/files-list').then(d => cache.filesList = d.files)],
+    ['お知らせ', () => api.get('/api/announcements').then(d => cache.announcements = d.announcements)],
+    ['チェックリスト', () => api.get('/api/checklist').then(d => cache.checklist = d.checklist)],
+    ['LP分析課題', () => api.get('/api/assignments').then(d => cache.assignments = d.assignments)],
+    ['写真補正課題', () => api.get('/api/photo-tasks').then(d => cache.photoTasks = d.tasks)],
+    ['ギャラリー', () => api.get('/api/gallery').then(d => cache.gallery = d.items)],
+    ['通販図鑑', () => api.get('/api/zukan').then(d => cache.zukan = d.items)],
   ];
   if (currentUser.role === 'admin') {
-    tasks.push(api.get('/api/students').then(d => {
+    jobs.push(['受講生一覧', () => api.get('/api/students').then(d => {
       cache.students = d.students;
       if (cache.students.length) {
         state.chatStudentId = state.chatStudentId || cache.students[0].id;
@@ -275,9 +280,17 @@ async function loadCoreData() {
         state.photoAdminStudent = state.photoAdminStudent || cache.students[0].id;
         state.adminReportStudent = state.adminReportStudent || cache.students[0].id;
       }
-    }));
+    })]);
   }
-  await Promise.all(tasks);
+  const results = await Promise.allSettled(jobs.map(([, fn]) => fn()));
+  const failed = [];
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      failed.push(jobs[i][0]);
+      console.error('loadCoreData failed:', jobs[i][0], r.reason);
+    }
+  });
+  return failed;
 }
 
 /* =======================================================
@@ -379,6 +392,18 @@ async function loadDataForView(view) {
   } else if (view === 'chat') {
     const q = currentUser.role === 'admin' ? ('?studentId=' + state.chatStudentId) : '';
     cache.chatMessages = (await api.get('/api/chat' + q)).messages;
+  } else if (view === 'announce') {
+    cache.announcements = (await api.get('/api/announcements')).announcements;
+  } else if (view === 'articles') {
+    cache.articles = (await api.get('/api/articles')).articles;
+  } else if (view === 'videos') {
+    cache.videos = (await api.get('/api/videos')).videos;
+  } else if (view === 'files') {
+    cache.filesList = (await api.get('/api/files-list')).files;
+  } else if (view === 'gallery') {
+    cache.gallery = (await api.get('/api/gallery')).items;
+  } else if (view === 'zukan') {
+    cache.zukan = (await api.get('/api/zukan')).items;
   } else if (view === 'analysis') {
     cache.assignments = (await api.get('/api/assignments')).assignments;
     if (currentUser.role === 'admin') {
@@ -442,7 +467,7 @@ function viewDashboard() {
     + '<span class="hb-sparkle" style="bottom:70px;right:200px;animation-delay:.6s;">'+sparkleSVG(13)+'</span>'
     + '</div>';
 
-  html += '<div class="announce">' + cache.announcements.slice(0, 3).map(a => '<div class="a-item"><span class="a-date">'+a.date+'</span><span>'+a.text+'</span></div>').join('') + '</div>';
+  html += '<div class="announce">' + cache.announcements.slice(0, 3).map(a => '<div class="a-item"><span class="a-date">'+a.date+'</span><span>'+linkifyHtml(a.text)+'</span></div>').join('') + '</div>';
 
   html += '<div class="two-col">';
   html += '<div>';
@@ -567,7 +592,7 @@ function reportItemHTML(r, opts) {
       + (opts.deletable ? '<button class="btn secondary sm" onclick="deleteReport('+r.id+')">'+icon('trash',12)+' 削除</button>' : '')
       + '</div>';
   }
-  return '<div class="report-item"><div class="r-date">'+r.date+'</div><div class="r-title">'+escapeHtml(r.title)+'</div><div class="r-content">'+escapeHtml(r.content)+'</div>'+actions+'</div>';
+  return '<div class="report-item"><div class="r-date">'+r.date+'</div><div class="r-title">'+escapeHtml(r.title)+'</div><div class="r-content">'+linkifyHtml(r.content)+'</div>'+actions+'</div>';
 }
 function openReportEditModal(id) {
   const r = cache.reports.find(x => x.id === id);
@@ -652,7 +677,7 @@ function viewChat() {
     const mine = (currentUser.role === 'admin' && m.from === 'me') || (currentUser.role === 'student' && m.from === 'them');
     const fileHtml = m.file ? '<div class="msg-file"><a href="'+m.file.url+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;display:flex;align-items:center;gap:6px;">'+icon('paperclip',14)+'<span>'+escapeHtml(m.file.name)+'（'+m.file.size+'）</span></a></div>' : '';
     html += '<div class="msg-wrap '+(mine?'me':'them')+'">'
-      + '<div class="msg '+(mine?'me':'them')+'">'+(m.text?escapeHtml(m.text):'')+fileHtml+'<span class="time">'+formatChatTime(m.time)+'</span></div>'
+      + '<div class="msg '+(mine?'me':'them')+'">'+(m.text?linkifyHtml(m.text):'')+fileHtml+'<span class="time">'+formatChatTime(m.time)+'</span></div>'
       + (mine ? '<div class="msg-actions"><button onclick="deleteChatMessage('+m.id+')">取り消す</button></div>' : '')
       + '</div>';
   });
@@ -748,7 +773,7 @@ function viewArticles() {
       : '';
     html += '<div class="article-card" style="--accent:'+rgba(PALETTE[i%3],.4)+';" onclick="openArticle('+a.id+')">'
       + articleThumbHTML(a, i)
-      + '<div class="a-body"><span class="tag blue">'+a.cat+'</span>'+(a.read?'<span class="tag" style="margin-left:6px;color:'+PALETTE[2]+';border-color:'+PALETTE[2]+';">'+icon('check',10)+' 既読</span>':'')+'<h4>'+escapeHtml(a.title)+'</h4><p>'+escapeHtml(a.excerpt)+'</p>'
+      + '<div class="a-body"><span class="tag blue">'+a.cat+'</span>'+(a.read?'<span class="tag" style="margin-left:6px;color:'+PALETTE[2]+';border-color:'+PALETTE[2]+';">'+icon('check',10)+' 既読</span>':'')+'<h4>'+escapeHtml(a.title)+'</h4><p>'+linkifyHtml(a.excerpt)+'</p>'
       + '<div class="article-meta"><button class="bookmark-btn'+(a.bookmarked?' active':'')+'" onclick="event.stopPropagation();toggleBookmark('+a.id+')">'+icon('star',15)+'</button><span class="date">'+a.date+'</span></div>'
       + (adminBtns ? '<div class="admin-card-actions" style="display:flex;gap:6px;margin-top:8px;">'+adminBtns+'</div>' : '')
       + '</div></div>';
@@ -1123,7 +1148,7 @@ function viewAnalysisList() {
   html += '<div class="grid cols-3 assignment-grid">';
   cache.assignments.forEach(a => {
     html += '<div class="assignment-card" style="--accent:'+rgba(PALETTE[a.seed%3],.4)+';" onclick="openAnalysis('+a.id+')">'+(a.thumb?'<img src="'+a.thumb+'" style="width:100%;aspect-ratio:1280/670;object-fit:cover;display:block;">':mockLP(a.seed,false));
-    html += '<div class="asg-body"><h4 style="font-size:14px;margin-bottom:4px;">'+escapeHtml(a.title)+'　'+escapeHtml(a.label)+'</h4><p style="font-size:11.5px;color:var(--sub);line-height:1.6;">'+escapeHtml(a.desc)+'</p>';
+    html += '<div class="asg-body"><h4 style="font-size:14px;margin-bottom:4px;">'+escapeHtml(a.title)+'　'+escapeHtml(a.label)+'</h4><p style="font-size:11.5px;color:var(--sub);line-height:1.6;">'+linkifyHtml(a.desc)+'</p>';
     if (currentUser.role === 'admin') {
       const st = cache.assignmentStatus[a.id];
       html += '<div class="asg-status-row"><span class="tag blue">'+(st?st.submittedCount:'-')+' / '+(st?st.total:'-')+'人 提出済み</span></div>';
@@ -1192,7 +1217,7 @@ function viewAnalysisDetail() {
 
   html += '<div class="card mb14"><div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">';
   html += '<div style="width:220px;flex-shrink:0;">'+(a.thumb?'<img src="'+a.thumb+'" style="width:100%;aspect-ratio:1280/670;object-fit:cover;border-radius:9px;display:block;">':mockLP(a.seed,true))+'</div>';
-  html += '<div style="flex:1;min-width:220px;"><div class="page-title" style="margin-bottom:8px;">'+escapeHtml(a.title)+'　'+escapeHtml(a.label)+'</div><div class="page-sub" style="margin-bottom:14px;">'+escapeHtml(a.desc)+'</div>';
+  html += '<div style="flex:1;min-width:220px;"><div class="page-title" style="margin-bottom:8px;">'+escapeHtml(a.title)+'　'+escapeHtml(a.label)+'</div><div class="page-sub" style="margin-bottom:14px;">'+linkifyHtml(a.desc)+'</div>';
   if (a.url) {
     html += '<a href="'+escapeHtml(a.url)+'" target="_blank" rel="noopener" class="btn secondary sm" style="margin-bottom:14px;" onclick="event.stopPropagation()">'+icon('paperclip',13)+' 分析するLPを見る</a><br>';
   }
@@ -1227,7 +1252,7 @@ function renderAnalysisSections(assignmentId, readonly) {
       const val = answers[qKey] || '';
       html += '<div class="q-item"><div class="q-text">'+q+'</div>';
       if (readonly) {
-        html += val.trim() ? '<div class="q-answer">'+escapeHtml(val)+'</div>' : '<div class="q-answer empty">未回答</div>';
+        html += val.trim() ? '<div class="q-answer">'+linkifyHtml(val)+'</div>' : '<div class="q-answer empty">未回答</div>';
       } else {
         html += '<textarea id="ans_'+assignmentId+'_'+qKey+'" oninput="updateAnswerDraft('+assignmentId+',\''+qKey+'\',this.value)" placeholder="考えたことを書いてみましょう">'+escapeHtml(val)+'</textarea>';
       }
@@ -1291,7 +1316,7 @@ function viewPhotoTaskList() {
   html += '<div class="grid cols-3 assignment-grid">';
   cache.photoTasks.forEach(t => {
     html += '<div class="assignment-card" style="--accent:'+rgba(PALETTE[t.seed%3],.4)+';" onclick="openPhotoTask('+t.id+')">'+(t.thumb?'<img src="'+t.thumb+'" style="width:100%;aspect-ratio:1280/670;object-fit:cover;display:block;">':mockPhotoThumb(t.seed));
-    html += '<div class="asg-body"><h4 style="font-size:14px;margin-bottom:4px;">'+escapeHtml(t.title)+'　'+escapeHtml(t.label)+'</h4><p style="font-size:11.5px;color:var(--sub);line-height:1.6;">'+escapeHtml(t.desc)+'</p>';
+    html += '<div class="asg-body"><h4 style="font-size:14px;margin-bottom:4px;">'+escapeHtml(t.title)+'　'+escapeHtml(t.label)+'</h4><p style="font-size:11.5px;color:var(--sub);line-height:1.6;">'+linkifyHtml(t.desc)+'</p>';
     if (currentUser.role === 'admin') {
       const st = cache.photoTaskStatus[t.id];
       html += '<div class="asg-status-row"><span class="tag blue">'+(st?st.submittedCount:'-')+' / '+(st?st.total:'-')+'人 提出済み</span></div>';
@@ -1413,7 +1438,7 @@ function viewPhotoTaskDetail() {
 
   html += '<div class="card mb14"><div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">';
   html += '<div style="width:220px;flex-shrink:0;">'+(t.thumb?'<img src="'+t.thumb+'" style="width:100%;aspect-ratio:1280/670;object-fit:cover;border-radius:9px;display:block;">':mockPhotoThumb(t.seed))+'</div>';
-  html += '<div style="flex:1;min-width:220px;"><div class="page-title" style="margin-bottom:8px;">'+escapeHtml(t.title)+'　'+escapeHtml(t.label)+'</div><div class="page-sub" style="margin-bottom:14px;">'+escapeHtml(t.desc)+'</div>';
+  html += '<div style="flex:1;min-width:220px;"><div class="page-title" style="margin-bottom:8px;">'+escapeHtml(t.title)+'　'+escapeHtml(t.label)+'</div><div class="page-sub" style="margin-bottom:14px;">'+linkifyHtml(t.desc)+'</div>';
   html += '<div class="file-row" style="margin-bottom:6px;"><div class="file-icon" style="background:#5b4fc9;">PSD</div><div style="flex:1;"><div class="f-name">'+escapeHtml(t.fileName)+'</div><div class="f-meta">'+t.fileSize+'</div></div>'
     + (t.fileUrl ? '<a class="btn secondary sm" href="'+t.fileUrl+'" download="'+escapeHtml(t.fileName)+'" onclick="event.stopPropagation()">'+icon('download',14)+' ダウンロード</a>' : '')
     + '</div>';
@@ -1469,35 +1494,47 @@ function viewGallery() {
   cache.gallery.forEach((g, i) => {
     const adminBtns = currentUser.role === 'admin'
       ? '<div class="admin-card-actions" style="display:flex;gap:6px;margin-top:8px;">'
-        + '<button class="btn secondary sm" onclick="openGalleryFormModal('+g.id+')">'+icon('pen',12)+' 編集</button>'
-        + '<button class="btn secondary sm" onclick="deleteGalleryItem('+g.id+')">'+icon('trash',12)+' 削除</button></div>'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();openGalleryFormModal('+g.id+')">'+icon('pen',12)+' 編集</button>'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();deleteGalleryItem('+g.id+')">'+icon('trash',12)+' 削除</button></div>'
       : '';
-    html += '<div class="gallery-card" style="--accent:'+rgba(PALETTE[i%3],.4)+';">'+(g.thumb?'<img src="'+g.thumb+'" style="width:100%;aspect-ratio:1280/670;object-fit:cover;display:block;">':mockLP(i,false))+'<div class="g-body"><span class="tag">'+escapeHtml(g.tag)+'</span><h4 style="font-size:13px;margin-top:8px;">'+escapeHtml(g.title)+'</h4>'+adminBtns+'</div></div>';
+    html += '<div class="gallery-card" onclick="openGalleryDetail('+g.id+')" style="--accent:'+rgba(PALETTE[i%3],.4)+';">'+(g.thumb?'<div class="thumb-box"><img src="'+g.thumb+'"></div>':mockLP(i,false))+'<div class="g-body"><span class="tag">'+escapeHtml(g.tag)+'</span><h4 style="font-size:13px;margin-top:8px;">'+escapeHtml(g.title)+'</h4>'+(g.images&&g.images.length>1?'<div class="page-sub" style="margin-top:4px;">画像'+g.images.length+'枚</div>':'')+adminBtns+'</div></div>';
   });
   html += '</div>';
   if (cache.gallery.length === 0) html += '<div class="page-sub" style="margin-top:20px;">作品がまだありません。</div>';
   return html;
 }
+function openGalleryDetail(id) {
+  const g = cache.gallery.find(x => x.id === id);
+  if (!g) return;
+  const imgs = (g.images && g.images.length) ? g.images : (g.thumb ? [g.thumb] : []);
+  showModal('<h2>'+escapeHtml(g.title)+'</h2><div class="modal-meta"><span class="tag">'+escapeHtml(g.tag)+'</span></div>'
+    + '<div class="lightbox-stack">' + imgs.map(u => '<img src="'+u+'">').join('') + '</div>');
+}
 function openGalleryFormModal(editId) {
-  stagedThumb = null;
+  stagedMultiImages = [];
   const editing = editId ? cache.gallery.find(g => g.id === editId) : null;
+  if (editing) {
+    const imgs = (editing.images && editing.images.length) ? editing.images : (editing.thumb ? [editing.thumb] : []);
+    stagedMultiImages = imgs.map(url => ({ existingKey: keyFromFileUrl(url), url }));
+  }
   showModal('<h2>' + (editing ? '作品を編集' : '作品を追加') + '</h2>'
     + '<div class="form-group"><label>タイトル</label><input type="text" id="newGalTitle" placeholder="例：化粧品LP／美容液" value="'+(editing?escapeHtml(editing.title):'')+'"></div>'
     + '<div class="form-group"><label>タグ（業種など）</label><input type="text" id="newGalTag" placeholder="例：化粧品" value="'+(editing?escapeHtml(editing.tag):'')+'"></div>'
-    + thumbUploadFieldHTML('newGalThumbFile', 'galThumbPreview')
+    + multiImageUploadFieldHTML('newGalImgFile', 'galImgPreview', 10)
     + '<button class="btn" id="submitGalBtn" onclick="submitGalleryForm('+(editId||'null')+')">'+(editing?'保存する':'作品を追加する')+'</button>');
+  renderMultiImagePreview('galImgPreview', 10);
 }
 async function submitGalleryForm(editId) {
   const title = document.getElementById('newGalTitle').value.trim();
   const tag = document.getElementById('newGalTag').value.trim();
   if (!title || !tag) { alert('タイトルとタグを入力してください。'); return; }
+  if (!stagedMultiImages.length) { alert('画像を1枚以上選んでください。'); return; }
   const btn = document.getElementById('submitGalBtn');
   btn.disabled = true; btn.textContent = editId ? '保存中...' : '追加中...';
   try {
-    let thumbKey = null;
-    if (stagedThumb) { thumbKey = (await uploadFile(stagedThumb.file, 'thumbs')).key; }
-    if (editId) { await api.put('/api/gallery/' + editId, { title, tag, thumbKey }); }
-    else { await api.post('/api/gallery', { title, tag, thumbKey }); }
+    const imageKeys = await resolveStagedImageKeys();
+    if (editId) { await api.put('/api/gallery/' + editId, { title, tag, imageKeys }); }
+    else { await api.post('/api/gallery', { title, tag, imageKeys }); }
     closeModal();
     cache.gallery = (await api.get('/api/gallery')).items;
     render();
@@ -1525,35 +1562,51 @@ function viewZukan() {
   cache.zukan.forEach((z, i) => {
     const adminBtns = currentUser.role === 'admin'
       ? '<div class="admin-card-actions" style="display:flex;gap:6px;margin-top:8px;">'
-        + '<button class="btn secondary sm" onclick="openZukanFormModal('+z.id+')">'+icon('pen',12)+' 編集</button>'
-        + '<button class="btn secondary sm" onclick="deleteZukanItem('+z.id+')">'+icon('trash',12)+' 削除</button></div>'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();openZukanFormModal('+z.id+')">'+icon('pen',12)+' 編集</button>'
+        + '<button class="btn secondary sm" onclick="event.stopPropagation();deleteZukanItem('+z.id+')">'+icon('trash',12)+' 削除</button></div>'
       : '';
-    html += '<div class="zukan-card" style="--accent:'+rgba(PALETTE[(i+1)%3],.4)+';"><div style="padding:14px;">'+(z.thumb?'<img src="'+z.thumb+'" style="width:100%;aspect-ratio:1280/670;object-fit:cover;border-radius:9px;display:block;">':mockLP(i+1,true))+'<div class="z-body" style="padding:0;"><h4 style="font-size:14px;margin-top:12px;">'+escapeHtml(z.title)+'</h4><div class="z-comment">'+escapeHtml(z.comment)+'</div>'+adminBtns+'</div></div></div>';
+    html += '<div class="zukan-card" onclick="openZukanDetail('+z.id+')" style="--accent:'+rgba(PALETTE[(i+1)%3],.4)+';"><div style="padding:14px;">'+(z.thumb?'<div class="thumb-box" style="border-radius:9px;"><img src="'+z.thumb+'"></div>':mockLP(i+1,true))+'<div class="z-body" style="padding:0;"><h4 style="font-size:14px;margin-top:12px;">'+escapeHtml(z.title)+'</h4><div class="z-comment">'+linkifyHtml(z.comment)+'</div>'+(z.images&&z.images.length>1?'<div class="page-sub" style="margin-top:4px;">画像'+z.images.length+'枚</div>':'')+adminBtns+'</div></div></div>';
   });
   html += '</div>';
   if (cache.zukan.length === 0) html += '<div class="page-sub" style="margin-top:20px;">事例がまだありません。</div>';
   return html;
 }
+function openZukanDetail(id) {
+  const z = cache.zukan.find(x => x.id === id);
+  if (!z) return;
+  const imgs = (z.images && z.images.length) ? z.images : (z.thumb ? [z.thumb] : []);
+  const linkHtml = z.linkUrl ? '<a href="'+escapeHtml(z.linkUrl)+'" target="_blank" rel="noopener" class="btn secondary sm" style="margin-bottom:14px;" onclick="event.stopPropagation()">'+icon('paperclip',13)+' LPを見る</a><br>' : '';
+  showModal('<h2>'+escapeHtml(z.title)+'</h2>' + linkHtml
+    + '<div class="z-comment" style="margin-bottom:14px;">'+linkifyHtml(z.comment)+'</div>'
+    + '<div class="lightbox-stack">' + imgs.map(u => '<img src="'+u+'">').join('') + '</div>');
+}
 function openZukanFormModal(editId) {
-  stagedThumb = null;
+  stagedMultiImages = [];
   const editing = editId ? cache.zukan.find(z => z.id === editId) : null;
+  if (editing) {
+    const imgs = (editing.images && editing.images.length) ? editing.images : (editing.thumb ? [editing.thumb] : []);
+    stagedMultiImages = imgs.map(url => ({ existingKey: keyFromFileUrl(url), url }));
+  }
   showModal('<h2>' + (editing ? '事例を編集' : '事例を追加') + '</h2>'
     + '<div class="form-group"><label>タイトル</label><input type="text" id="newZukTitle" placeholder="例：化粧品LP" value="'+(editing?escapeHtml(editing.title):'')+'"></div>'
     + '<div class="form-group"><label>解説コメント</label><textarea id="newZukComment" placeholder="デザインの良い点を解説してください">'+(editing?escapeHtml(editing.comment):'')+'</textarea></div>'
-    + thumbUploadFieldHTML('newZukThumbFile', 'zukThumbPreview')
+    + '<div class="form-group"><label>参考LPのURL（任意）</label><input type="text" id="newZukUrl" placeholder="https://..." value="'+(editing&&editing.linkUrl?escapeHtml(editing.linkUrl):'')+'"></div>'
+    + multiImageUploadFieldHTML('newZukImgFile', 'zukImgPreview', 10)
     + '<button class="btn" id="submitZukBtn" onclick="submitZukanForm('+(editId||'null')+')">'+(editing?'保存する':'事例を追加する')+'</button>');
+  renderMultiImagePreview('zukImgPreview', 10);
 }
 async function submitZukanForm(editId) {
   const title = document.getElementById('newZukTitle').value.trim();
   const comment = document.getElementById('newZukComment').value.trim();
+  const linkUrl = document.getElementById('newZukUrl').value.trim();
   if (!title || !comment) { alert('タイトルと解説コメントを入力してください。'); return; }
+  if (!stagedMultiImages.length) { alert('画像を1枚以上選んでください。'); return; }
   const btn = document.getElementById('submitZukBtn');
   btn.disabled = true; btn.textContent = editId ? '保存中...' : '追加中...';
   try {
-    let thumbKey = null;
-    if (stagedThumb) { thumbKey = (await uploadFile(stagedThumb.file, 'thumbs')).key; }
-    if (editId) { await api.put('/api/zukan/' + editId, { title, comment, thumbKey }); }
-    else { await api.post('/api/zukan', { title, comment, thumbKey }); }
+    const imageKeys = await resolveStagedImageKeys();
+    if (editId) { await api.put('/api/zukan/' + editId, { title, comment, imageKeys, linkUrl }); }
+    else { await api.post('/api/zukan', { title, comment, imageKeys, linkUrl }); }
     closeModal();
     cache.zukan = (await api.get('/api/zukan')).items;
     render();
@@ -1653,13 +1706,39 @@ async function submitNewStudent() {
    VIEW: ANNOUNCE
 ======================================================= */
 function viewAnnounce() {
-  let html = '<div class="page-head"><div class="page-title">お知らせ</div><div class="page-sub">運営からのお知らせ一覧です。</div></div><div class="card">';
+  let html = '<div class="page-head"><div class="page-title">お知らせ</div><div class="page-sub">運営からのお知らせ一覧です。記事や動画を公開すると自動で追加されます。</div></div>';
+  if (currentUser.role === 'admin') {
+    html += '<div class="card mb14"><div class="form-group" style="margin-bottom:8px;"><label>お知らせを手動で追加</label><input type="text" id="newAnnounceText" placeholder="例：夏季休業のお知らせ"></div><button class="btn secondary sm" onclick="submitAnnouncement()">'+icon('pen',13)+' 追加する</button></div>';
+  }
+  html += '<div class="card">';
   cache.announcements.forEach(a => {
-    html += '<div class="a-item" style="border-bottom:1px solid var(--gray);padding:12px 0;"><span class="a-date">'+a.date+'</span><span>'+escapeHtml(a.text)+'</span></div>';
+    const delBtn = currentUser.role === 'admin' ? '<button class="btn secondary sm" style="margin-left:10px;" onclick="deleteAnnouncement('+a.id+')">'+icon('trash',12)+'</button>' : '';
+    html += '<div class="a-item" style="border-bottom:1px solid var(--gray);padding:12px 0;display:flex;align-items:center;"><span class="a-date">'+a.date+'</span><span style="flex:1;">'+linkifyHtml(a.text)+'</span>'+delBtn+'</div>';
   });
   if (cache.announcements.length === 0) html += '<div class="page-sub">お知らせはまだありません。</div>';
   html += '</div>';
   return html;
+}
+async function submitAnnouncement() {
+  const input = document.getElementById('newAnnounceText');
+  const text = input.value.trim();
+  if (!text) { alert('お知らせの内容を入力してください。'); return; }
+  try {
+    await api.post('/api/announcements', { text });
+    input.value = '';
+    cache.announcements = (await api.get('/api/announcements')).announcements;
+    render();
+    showToast('お知らせを追加しました');
+  } catch (e) { alert('追加に失敗しました: ' + e.message); }
+}
+async function deleteAnnouncement(id) {
+  if (!confirm('このお知らせを削除します。よろしいですか？')) return;
+  try {
+    await api.del('/api/announcements/' + id);
+    cache.announcements = (await api.get('/api/announcements')).announcements;
+    render();
+    showToast('お知らせを削除しました');
+  } catch (e) { showToast('削除に失敗しました: ' + e.message); }
 }
 
 /* =======================================================
@@ -1763,6 +1842,59 @@ function handleThumbUpload(input, previewId) {
   };
   reader.readAsDataURL(file);
 }
+let stagedMultiImages = []; // {file, dataUrl}（新規） or {existingKey, url}（編集時の既存画像）
+function multiImageUploadFieldHTML(inputId, previewId, max) {
+  max = max || 10;
+  return '<div class="form-group"><label>画像（1〜'+max+'枚・1枚目が自動的にサムネイルになります）</label>'
+    + '<input type="file" accept="image/*" multiple id="'+inputId+'" style="display:none" onchange="handleMultiImageUpload(this,\''+previewId+'\','+max+')">'
+    + '<button class="btn secondary sm" type="button" onclick="document.getElementById(\''+inputId+'\').click()">'+icon('paperclip',13)+' 画像を選択（複数選択可）</button>'
+    + '<div id="'+previewId+'" class="multi-thumb-preview"></div>'
+    + '<div class="page-sub" style="margin-top:6px;">選んだ順番の1枚目が自動的にサムネイルになります。画像は変形せずそのままの縦横比で表示されます。</div></div>';
+}
+function handleMultiImageUpload(input, previewId, max) {
+  const files = Array.from(input.files || []);
+  if (!files.length) return;
+  if (stagedMultiImages.length + files.length > max) {
+    alert('画像は最大'+max+'枚までです。');
+    input.value = '';
+    return;
+  }
+  files.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      stagedMultiImages.push({ file, dataUrl: e.target.result });
+      renderMultiImagePreview(previewId, max);
+    };
+    reader.readAsDataURL(file);
+  });
+  input.value = '';
+}
+function renderMultiImagePreview(previewId, max) {
+  const preview = document.getElementById(previewId);
+  if (!preview) return;
+  preview.innerHTML = stagedMultiImages.map((img, i) =>
+    '<div class="multi-thumb-item">'+(i===0?'<span class="multi-thumb-badge">サムネイル</span>':'')
+    + '<img src="'+(img.dataUrl || img.url)+'">'
+    + '<button type="button" class="multi-thumb-remove" onclick="removeMultiImage('+i+',\''+previewId+'\','+max+')">'+icon('x',12)+'</button></div>'
+  ).join('');
+}
+function removeMultiImage(index, previewId, max) {
+  stagedMultiImages.splice(index, 1);
+  renderMultiImagePreview(previewId, max);
+}
+// stagedMultiImagesを実際のR2キー配列に変換する（新規ファイルはここでアップロードする）
+async function resolveStagedImageKeys() {
+  const keys = [];
+  for (const img of stagedMultiImages) {
+    if (img.existingKey) { keys.push(img.existingKey); }
+    else if (img.file) { const uploaded = await uploadFile(img.file, 'gallery'); keys.push(uploaded.key); }
+  }
+  return keys;
+}
+// 表示URL（/api/files/xxx）からR2キー（xxx）を取り出す
+function keyFromFileUrl(url) {
+  return (url || '').replace(/^\/api\/files\//, '');
+}
 function thumbUploadFieldHTML(inputId, previewId) {
   return '<div class="form-group"><label>サムネイル画像（任意・1280×670推奨）</label>'
     + '<input type="file" accept="image/*" id="'+inputId+'" style="display:none" onchange="handleThumbUpload(this,\''+previewId+'\')">'
@@ -1776,6 +1908,18 @@ function thumbUploadFieldHTML(inputId, previewId) {
 ======================================================= */
 function escapeHtml(str) {
   return (str || '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+}
+// 表示用: プレーンテキストをエスケープしたうえで、http(s)のURLだけを自動的にクリック可能なリンクに変換する。
+// フォームの value 属性など、編集用の入力欄には絶対に使わないこと（escapeHtmlのみを使う）。
+function linkifyHtml(str) {
+  const escaped = escapeHtml(str);
+  return escaped.replace(/https?:\/\/[^\s<]+/g, m => {
+    const trailingMatch = m.match(/[)\]}»,.!?、。」』]+$/);
+    const trailing = trailingMatch ? trailingMatch[0] : '';
+    const core = trailing ? m.slice(0, -trailing.length) : m;
+    if (!core) return m;
+    return '<a href="'+core+'" target="_blank" rel="noopener noreferrer">'+core+'</a>'+trailing;
+  });
 }
 function rgba(hex, a) {
   const h = hex.replace('#', '');

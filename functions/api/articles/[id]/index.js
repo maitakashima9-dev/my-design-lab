@@ -1,4 +1,5 @@
 import { requireAdmin, jsonResponse, errorResponse } from '../../../_lib/auth.js';
+import { addAnnouncement } from '../../../_lib/announce.js';
 
 export async function onRequestPut({ request, env, params }) {
   const { error } = await requireAdmin(request, env.DB);
@@ -21,6 +22,7 @@ export async function onRequestPut({ request, env, params }) {
       `UPDATE articles SET cat = ?, title = ?, excerpt = ?, body = ?, rich_body = ? WHERE id = ?`
     ).bind(cat, title, excerpt, articleBody, richBody ? 1 : 0, id).run();
   }
+  await addAnnouncement(env.DB, `記事を更新しました：「${title}」`);
   return jsonResponse({ ok: true });
 }
 

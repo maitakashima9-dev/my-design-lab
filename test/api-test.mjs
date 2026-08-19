@@ -159,6 +159,104 @@ async function main() {
   const filesList5 = await req(adminJar, 'GET', '/api/files-list');
   check('deleted file no longer listed', !filesList5.data.files.find(f => f.id === noPwFile.id));
 
+  // ===== gallery: multi-image =====
+  const galCreate = await req(adminJar, 'POST', '/api/gallery', { title: 'マルチ画像テスト', tag: 'テスト', imageKeys: ['gallery/a.png', 'gallery/b.png', 'gallery/c.png'] });
+  check('admin create gallery item with 3 images -> 201', galCreate.status === 201, galCreate);
+  const galId = galCreate.data && galCreate.data.id;
+
+  const galNoImages = await req(adminJar, 'POST', '/api/gallery', { title: '画像なし', tag: 'テスト', imageKeys: [] });
+  check('gallery create without images -> 400', galNoImages.status === 400, galNoImages);
+
+  const tooManyKeys = Array.from({ length: 11 }, (_, i) => 'gallery/x' + i + '.png');
+  const galTooMany = await req(adminJar, 'POST', '/api/gallery', { title: '画像多すぎ', tag: 'テスト', imageKeys: tooManyKeys });
+  check('gallery create with 11 images -> 400 (max 10)', galTooMany.status === 400, galTooMany);
+
+  const galList = await req(studentJar, 'GET', '/api/gallery');
+  const galItem = galList.data.items.find(g => g.id === galId);
+  check('gallery item has 3 images in order', galItem && galItem.images.length === 3 && galItem.images[0].includes('a.png'), galItem);
+  check('gallery item thumb is first image', galItem && galItem.thumb === galItem.images[0], galItem);
+
+  const studentGalCreate = await req(studentJar, 'POST', '/api/gallery', { title: 'x', tag: 'x', imageKeys: ['gallery/z.png'] });
+  check('student cannot create gallery item -> 403', studentGalCreate.status === 403, studentGalCreate);
+
+  // edit: replace images with a smaller set
+  const galEdit = await req(adminJar, 'PUT', '/api/gallery/' + galId, { title: 'マルチ画像テスト（編集済み）', tag: 'テスト', imageKeys: ['gallery/new1.png'] });
+  check('admin edit gallery replaces images -> ok', galEdit.status === 200, galEdit);
+  const galList2 = await req(studentJar, 'GET', '/api/gallery');
+  const galItem2 = galList2.data.items.find(g => g.id === galId);
+  check('gallery item now has 1 image after edit', galItem2 && galItem2.images.length === 1 && galItem2.images[0].includes('new1.png'), galItem2);
+
+  // edit without imageKeys -> images untouched
+  const galEditNoImg = await req(adminJar, 'PUT', '/api/gallery/' + galId, { title: 'タイトルだけ変更', tag: 'テスト' });
+  check('admin edit gallery without imageKeys -> ok', galEditNoImg.status === 200, galEditNoImg);
+  const galList3 = await req(studentJar, 'GET', '/api/gallery');
+  const galItem3 = galList3.data.items.find(g => g.id === galId);
+  check('gallery images untouched when imageKeys omitted', galItem3 && galItem3.images.length === 1, galItem3);
+
+  const galDelete = await req(adminJar, 'DELETE', '/api/gallery/' + galId);
+  check('admin delete gallery item -> ok', galDelete.status === 200, galDelete);
+  const galList4 = await req(studentJar, 'GET', '/api/gallery');
+  check('deleted gallery item no longer listed', !galList4.data.items.find(g => g.id === galId));
+
+  // legacy seeded gallery item (no gallery_images rows, no thumb_key) falls back to no-thumb placeholder cleanly
+  const legacyGalItem = galList.data.items.find(g => g.title === 'テストギャラリー1');
+  check('legacy gallery item with no images returns null thumb (no crash)', legacyGalItem && legacyGalItem.thumb === null && Array.isArray(legacyGalItem.images) && legacyGalItem.images.length === 0, legacyGalItem);
+
+  // ===== zukan: multi-image + link =====
+  const zukCreate = await req(adminJar, 'POST', '/api/zukan', { title: 'マルチ画像図鑑テスト', comment: 'コメント', imageKeys: ['gallery/z1.png', 'gallery/z2.png'], linkUrl: 'https://example.com/lp/zukan-test' });
+  check('admin create zukan item with images+link -> 201', zukCreate.status === 201, zukCreate);
+  const zukId = zukCreate.data && zukCreate.data.id;
+
+  const zukList = await req(studentJar, 'GET', '/api/zukan');
+  const zukItem = zukList.data.items.find(z => z.id === zukId);
+  check('zukan item has 2 images', zukItem && zukItem.images.length === 2, zukItem);
+  check('zukan item has linkUrl', zukItem && zukItem.linkUrl === 'https://example.com/lp/zukan-test', zukItem);
+
+  const zukNoImages = await req(adminJar, 'POST', '/api/zukan', { title: '画像なし', comment: 'x', imageKeys: [] });
+  check('zukan create without images -> 400', zukNoImages.status === 400, zukNoImages);
+
+  const zukDelete = await req(adminJar, 'DELETE', '/api/zukan/' + zukId);
+  check('admin delete zukan item -> ok', zukDelete.status === 200, zukDelete);
+
+  // ===== announcements: auto-create on article/video post + manual add/delete =====
+  const annBefore = await req(studentJar, 'GET', '/api/announcements');
+  const annCountBefore = annBefore.data.announcements.length;
+
+  const newArticle = await req(adminJar, 'POST', '/api/articles', { cat: 'LPデザイン', title: 'お知らせ連動テスト記事', excerpt: '抜粋', articleBody: '本文', richBody: true, thumbKey: null });
+  check('create article -> 201', newArticle.status === 201, newArticle);
+
+  const annAfterArticle = await req(studentJar, 'GET', '/api/announcements');
+  check('announcement auto-added after article create', annAfterArticle.data.announcements.length === annCountBefore + 1, annAfterArticle);
+  check('new announcement mentions the article title', annAfterArticle.data.announcements[0].text.includes('お知らせ連動テスト記事'), annAfterArticle.data.announcements[0]);
+
+  const newArticleId = newArticle.data.id;
+  const editArticle = await req(adminJar, 'PUT', '/api/articles/' + newArticleId, { cat: 'LPデザイン', title: 'お知らせ連動テスト記事（更新）', excerpt: '抜粋', articleBody: '本文', richBody: true });
+  check('edit article -> ok', editArticle.status === 200, editArticle);
+  const annAfterEdit = await req(studentJar, 'GET', '/api/announcements');
+  check('announcement auto-added after article edit', annAfterEdit.data.announcements.length === annCountBefore + 2, annAfterEdit);
+
+  const studentAddAnnounce = await req(studentJar, 'POST', '/api/announcements', { text: 'ハック' });
+  check('student cannot manually add announcement -> 403', studentAddAnnounce.status === 403, studentAddAnnounce);
+
+  const adminAddAnnounce = await req(adminJar, 'POST', '/api/announcements', { text: '手動お知らせテスト' });
+  check('admin manually add announcement -> 201', adminAddAnnounce.status === 201, adminAddAnnounce);
+  const manualAnnounceId = adminAddAnnounce.data.id;
+
+  const studentDeleteAnnounce = await req(studentJar, 'DELETE', '/api/announcements/' + manualAnnounceId);
+  check('student cannot delete announcement -> 403', studentDeleteAnnounce.status === 403, studentDeleteAnnounce);
+
+  const adminDeleteAnnounce = await req(adminJar, 'DELETE', '/api/announcements/' + manualAnnounceId);
+  check('admin delete announcement -> ok', adminDeleteAnnounce.status === 200, adminDeleteAnnounce);
+
+  // ===== LP分析課題: confirm students CAN save answers via the API (rules out a backend bug) =====
+  const assignList = await req(studentJar, 'GET', '/api/assignments');
+  const firstAssignment = assignList.data.assignments[0];
+  check('assignments list has at least one item', !!firstAssignment, assignList);
+  if (firstAssignment) {
+    const saveAnswer = await req(studentJar, 'POST', '/api/assignments/' + firstAssignment.id + '/answers', { qKey: 's0q0', value: 'テスト回答です' });
+    check('student can save an LP分析課題 answer -> ok', saveAnswer.status === 200, saveAnswer);
+  }
+
   console.log(`\napi-test.mjs: ${passCount} passed, ${failCount} failed`);
   if (failCount > 0) {
     console.log('Failures:', failures);

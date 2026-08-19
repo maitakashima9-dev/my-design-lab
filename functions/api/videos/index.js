@@ -1,4 +1,5 @@
 import { requireUser, requireAdmin, jsonResponse, errorResponse } from '../../_lib/auth.js';
+import { addAnnouncement } from '../../_lib/announce.js';
 
 export async function onRequestGet({ request, env }) {
   const { error } = await requireUser(request, env.DB);
@@ -27,6 +28,8 @@ export async function onRequestPost({ request, env }) {
     `INSERT INTO videos (cat, title, date, dur, video_url, thumb_key, is_new)
      VALUES (?, ?, date('now'), ?, ?, ?, 1)`
   ).bind(cat, title, dur || '--:--', videoUrl || null, thumbKey || null).run();
+
+  await addAnnouncement(env.DB, `新着動画：「${title}」を公開しました`);
 
   return jsonResponse({ id: result.meta.last_row_id }, 201);
 }
