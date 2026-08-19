@@ -190,6 +190,7 @@ function icon(name, size) {
     back: '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
     paperclip: '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
     x: '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   };
   if (name === 'play') {
     return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
@@ -782,8 +783,9 @@ function openArticleModal(editId) {
     + '<div class="form-group"><label>抜粋（一覧に表示される概要）</label><textarea id="newArtExcerpt" placeholder="記事の概要を1〜2行で">'+(editing?escapeHtml(editing.excerpt):'')+'</textarea></div>'
     + '<div class="form-group"><label>本文</label>'
     + '<div class="rich-editor-toolbar"><button type="button" class="btn secondary sm" onmousedown="event.preventDefault();saveArtSelection();" onclick="document.getElementById(\'newArtImgInsertInput\').click()">'+icon('paperclip',13)+' 画像を挿入</button>'
+    + '<button type="button" class="btn secondary sm" style="margin-left:6px;" onmousedown="event.preventDefault();saveArtSelection();" onclick="insertArtLink()">'+icon('link',13)+' リンクを挿入</button>'
     + '<input type="file" id="newArtImgInsertInput" accept="image/*" multiple style="display:none" onchange="handleArtImgInsertChange(this)">'
-    + '<span class="rt-hint">画像は本文中にドラッグ＆ドロップでも差し込めます</span></div>'
+    + '<span class="rt-hint">画像は本文中にドラッグ＆ドロップでも差し込めます。URLをそのまま貼り付けただけではリンクになりません。リンクにしたい文字を選んでから「リンクを挿入」を押してください</span></div>'
     + '<div id="newArtBody" class="rich-editor" contenteditable="true" data-placeholder="記事本文（画像はここに直接ドラッグ＆ドロップできます）"'
     + ' ondragover="event.preventDefault();this.classList.add(\'drag-over\')"'
     + ' ondragleave="this.classList.remove(\'drag-over\')"'
@@ -835,6 +837,22 @@ function insertArtImage(file) {
     }).catch(() => { showToast('画像のアップロードに失敗しました'); });
   };
   reader.readAsDataURL(file);
+}
+function insertArtLink() {
+  const editor = document.getElementById('newArtBody');
+  if (!editor) return;
+  const url = prompt('リンク先のURLを入力してください（例：https://example.com/lp/xxxxx）');
+  if (!url || !url.trim()) return;
+  const safeUrl = url.trim();
+  editor.focus();
+  const sel = window.getSelection();
+  let selectedText = '';
+  if (savedArtRange && editor.contains(savedArtRange.startContainer)) {
+    sel.removeAllRanges(); sel.addRange(savedArtRange);
+    selectedText = sel.toString();
+  }
+  const linkText = selectedText || safeUrl;
+  insertHtmlIntoArtBody('<a href="'+escapeHtml(safeUrl)+'" target="_blank" rel="noopener noreferrer">'+escapeHtml(linkText)+'</a>');
 }
 function handleArtImgInsertChange(input) {
   const files = Array.from(input.files || []).filter(f => f.type.startsWith('image/'));
