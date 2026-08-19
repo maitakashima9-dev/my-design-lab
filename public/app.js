@@ -1604,7 +1604,7 @@ async function submitZukanForm(editId) {
   const btn = document.getElementById('submitZukBtn');
   btn.disabled = true; btn.textContent = editId ? '保存中...' : '追加中...';
   try {
-    const imageKeys = await resolveStagedImageKeys();
+    const imageKeys = await resolveStagedImageKeys('zukan');
     if (editId) { await api.put('/api/zukan/' + editId, { title, comment, imageKeys, linkUrl }); }
     else { await api.post('/api/zukan', { title, comment, imageKeys, linkUrl }); }
     closeModal();
@@ -1883,11 +1883,11 @@ function removeMultiImage(index, previewId, max) {
   renderMultiImagePreview(previewId, max);
 }
 // stagedMultiImagesを実際のR2キー配列に変換する（新規ファイルはここでアップロードする）
-async function resolveStagedImageKeys() {
+async function resolveStagedImageKeys(prefix) {
   const keys = [];
   for (const img of stagedMultiImages) {
     if (img.existingKey) { keys.push(img.existingKey); }
-    else if (img.file) { const uploaded = await uploadFile(img.file, 'gallery'); keys.push(uploaded.key); }
+    else if (img.file) { const uploaded = await uploadFile(img.file, prefix || 'gallery'); keys.push(uploaded.key); }
   }
   return keys;
 }
